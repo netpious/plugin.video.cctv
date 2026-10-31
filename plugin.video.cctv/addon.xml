@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.cctv"
+       name="央视网"
+       version="1.3"
+       provider-name="netpious, dsh">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+
+  <extension point="xbmc.python.pluginsource" library="default.py">
+    <provides>video</provides>
+  </extension>
+
+  <extension point="xbmc.addon.metadata">
+    <summary lang="zh_CN">在线浏览央视网（cctv.com）中的电视节目和文章：首页、新闻、视频、体育与赛事、4K 专区、栏目、直播与搜索，支持长按预览与下载</summary>
+    <summary lang="en_GB">Watch CCTV (cctv.com) programmes and articles online: home, news, videos, sports and match videos, 4K zone, columns, live channels and search, with preview and download</summary>
+    <description lang="zh_CN">在线浏览央视网（cctv.com）中的电视节目和文章。浏览、播放与下载都在 Kodi 原生界面内完成，无需打开外部浏览器。
+
+内容
+
+首页
+按央视网首页自身的板块编排：今日热门、直播导视、片库、看点、收视 TOP 榜、经典影视剧场。
+
+新闻
+要闻、国内、国际、社会、法治、科技、文娱、教育、健康，共九个子栏目，可阅读报道全文。
+
+视频
+央视网视频库的最新发布。
+
+体育
+19 个赛事频道与 15 个央视名栏。频道取自央视体育的顶部导航，含奥林匹克频道、NBA、CBA、中超、英超、德甲、法甲、意甲、羽毛球、乒乓球、网球、F1、排球、中国足球、国际足球、冬奥会、亚运会等；名栏为央视体育的名牌节目，如体育新闻、体育世界、体坛快讯、天下足球、足球之夜、冠军欧洲、篮球公园、棋牌乐。每个频道均按最新发布列出视频与图文，可逐页翻看。
+
+赛事
+按央视体育的赛程看比赛视频。近期集锦把最近三天所有比赛的集锦合成为一个列表，一步直达视频；也可以按日期（近三周共 21 天）或按联赛（NBA、CBA、英超、中超、意甲、德甲、法甲、西甲、解放者杯）翻看赛程。每场比赛内部列出该场的全部集锦与比赛回顾，并附一份技术统计文本：比分、上下半场或分节、射门、射正、射偏、角球、犯规、越位、黄牌、红牌、控球率（篮球为投篮、三分、罚球、篮板、助攻、抢断、盖帽）。没有关联集锦的场次会直接弹出这份技术统计，不留空目录。
+
+4K 专区
+超高清专区，实测最高 1920×1080 / 4.1 Mbps。
+
+栏目
+348 个电视栏目，先按 CCTV 频道分组，再进入栏目逐期回看。
+
+直播
+CCTV 各频道在线直播。
+
+搜索
+关键词检索；同一部剧集的多条结果自动合并成一个入口，点进去即可选集。
+
+播放
+
+由 Kodi 内置播放器直接播放，无需安装额外解码器或播放组件。每个节目自动采用其可用的最高清晰度：4K 专区为 1080P，新闻联播为 720P。清晰度以片源实际提供的为准：赛事集锦最高 640x360，部分老栏目为 360P。
+
+下载
+
+在任意条目上长按即可打开菜单。视频可先逐档预览，再选择清晰度下载；下载过程显示进度、可随时取消，且不覆盖同名文件。图文报道可保存为文本。下载结果为标准 TS 视频与 TXT 文本，可直接用 Kodi 或其它播放器打开。下载目录可在设置中指定，也可在下载窗口中当场选择。
+
+操作
+
+界面为中文，操作方式与 Kodi 其它视频插件一致：遥控器方向键移动、确认键播放、返回键退出；鼠标右键或长按条目即为菜单。</description>
+    <description lang="en_GB">Watch CCTV (cctv.com) programmes and articles online. Browsing, playback and downloading all take place inside the native Kodi interface, with no external browser required.
+
+Contents
+
+Home: grouped like the cctv.com homepage - today's highlights, live guide, library, picks, ratings and classic drama.
+News: nine categories (top stories, China, world, society, law, technology, entertainment, education, health), with full article text.
+Videos: the latest releases of the cctv.com video library.
+Sports: nineteen competition channels taken from the CCTV Sports top navigation (Olympic Channel, NBA, CBA, Chinese Super League, Premier League, Bundesliga, Ligue 1, Serie A, badminton, table tennis, tennis, Formula 1, volleyball, Chinese football, international football, Winter Olympics, Asian Games and more) plus fifteen signature programmes such as Sports News, World Football, Football Night and Basketball Park. Every channel lists its newest videos and articles, page by page.
+Matches: browse the CCTV Sports schedule and watch each game's highlights and full replays, either from a combined "recent highlights" list, by date (a rolling three-week window) or by league (NBA, CBA, Premier League, Chinese Super League, Serie A, Bundesliga, Ligue 1, La Liga and more). Every game page lists the highlights and also carries a text report: score, half-time or period splits, shots, shots on target, corners, fouls, offsides, cards and possession (for basketball: field goals, three-pointers, free throws, rebounds, assists, steals and blocks). Games without linked highlights show that report directly instead of an empty folder.
+4K zone: ultra-high-definition programmes, up to 1920x1080 / 4.1 Mbps.
+Columns: 348 TV columns, grouped by channel and browsable episode by episode.
+Live: online streams of the CCTV channels.
+Search: keyword search that merges every episode of a series into a single entry.
+
+Playback
+
+Handled by Kodi's built-in player, so no extra decoder or playback component is required. Each programme is played at the highest quality it offers: 1080P for the 4K zone, 720P for the main news programme. Quality is whatever the source actually provides: match highlights top out at 640x360 and some older columns at 360P.
+
+Download
+
+Long-press any item to open the context menu. Videos can be previewed quality by quality and then downloaded, with progress display, cancellation and no overwriting of existing files. Articles can be saved as text. Downloads are standard TS video and plain text files that open in Kodi or any other player. The download folder can be set in the settings or chosen directly in the download dialog.
+
+Navigation
+
+The interface is Chinese and follows standard Kodi navigation: arrow keys to move, OK to play, Back to leave, right-click or long-press for the context menu.</description>
+    <platform>all</platform>
+    <license>MIT</license>
+    <disclaimer lang="zh_CN">第三方客户端，与央视网官方无关；仅读取公开页面中提供的内容，不提供、不修改任何受版权保护的媒体。</disclaimer>
+    <disclaimer lang="en_GB">Third-party client, not affiliated with CCTV; it only reads publicly available pages.</disclaimer>
+    <assets>
+      <icon>icon.png</icon>
+      <fanart>fanart.jpg</fanart>
+    </assets>
+  </extension>
+</addon>

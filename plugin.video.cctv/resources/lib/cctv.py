@@ -1,0 +1,442 @@
+# -*- coding: utf-8 -*-
+"""央视网内容层：首页抓取、视频地址解析、直播频道。"""
+
+import html as html_mod
+import json
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+from . import net
+
+HOME_URL = "https://www.cctv.com/"
+
+# 首页有多个入口，任何一个打不开都不至于让「首页」整个空掉
+HOME_SOURCES = (
+    ("www.cctv.com", "https://www.cctv.com/"),
+    ("tv.cctv.com", "https://tv.cctv.com/"),
+    ("m.cctv.com", "https://m.cctv.com/"),
+)
+MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+)
+VIDEO_INFO_API = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid=%s"
+SEARCH_API = (
+    "https://search.cctv.com/m/if3g_search.php"
+    "?page=%d&qtext=%s&type=video&sort=&pageSize=%d&channel="
+)
+
+# 直播线路，两套：
+#   LIVE_HOSTS_HD  —— ldncctvwbcd / cdrmld{ch}_1，时移流，master 里给 1080P/720P/360P，
+#                     实测能一路拉到 .ts 分片，优先用这套。
+#   LIVE_HOSTS     —— ldncctvwbnd / ld{ch}_2，传统直播流，多数只回一个空壳 master
+#                     （里面写的二级地址 404），留作兜底。
+LIVE_HOSTS_HD = (
+    "http://ldncctvwbcdcnc.v.wscdns.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
+    "http://ldncctvwbcdks.v.kcdnvip.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
+    "http://ldncctvwbcdbd.a.bdydns.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
+    "http://ldncctvwbcdali.v.myalicdn.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
+)
+
+LIVE_HOSTS = (
+    "http://ldncctvwbndcnc.v.wscdns.com/ldncctvwbnd/ld%s_2/index.m3u8",
+    "http://ldncctvwbndtxy.liveplay.myqcloud.com/ldncctvwbnd/ld%s_2/index.m3u8",
+    "http://ldncctvwbndks.v.kcdnvip.com/ldncctvwbnd/ld%s_2/index.m3u8",
+    "http://ldncctvwbndbd.a.bdydns.com/ldncctvwbnd/ld%s_2/index.m3u8",
+    "http://ldncctvwbndali.v.myalicdn.com/ldncctvwbnd/ld%s_2/index.m3u8",
+    "http://ldncctvwbndhwy.cntv.myhwcdn.cn/ldncctvwbnd/ld%s_2/index.m3u8",
+)
+
+LIVE_CHANNELS = (
+    ("cctv1", "CCTV-1 综合"),
+    ("cctv2", "CCTV-2 财经"),
+    ("cctv3", "CCTV-3 综艺"),
+    ("cctv4", "CCTV-4 中文国际"),
+    ("cctv5", "CCTV-5 体育"),
+    ("cctv5plus", "CCTV-5+ 体育赛事"),
+    ("cctv6", "CCTV-6 电影"),
+    ("cctv7", "CCTV-7 国防军事"),
+    ("cctv8", "CCTV-8 电视剧"),
+    ("cctvjilu", "CCTV-9 纪录"),
+    ("cctv10", "CCTV-10 科教"),
+    ("cctv11", "CCTV-11 戏曲"),
+    ("cctv12", "CCTV-12 社会与法"),
+    ("cctv13", "CCTV-13 新闻"),
+    ("cctvchild", "CCTV-14 少儿"),
+    ("cctv15", "CCTV-15 音乐"),
+    ("cctv16", "CCTV-16 奥林匹克"),
+    ("cctv17", "CCTV-17 农业农村"),
+    ("cctveurope", "CCTV 欧洲"),
+    ("cctvamerica", "CCTV 美洲"),
+)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_VIDE_RE = re.compile(
+    r'<a\s[^>]*?href="(https?://[^"]*?/VIDE[^"]*?\.shtml)"[^>]*?>(.*?)</a>', re.S | re.I
+)
+_GUID_RE = re.compile(r'var\s+guid\s*=\s*"([0-9a-fA-F]{32})"')
+_IMG_RE = re.compile(
+    r'(?:data-src|src)="((?:https?:)?//[^"]+?\.(?:jpg|jpeg|png|webp))"', re.I
+)
+_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/")
+_PLACEHOLDER = "bottomplan.gif"
+
+# 视频页有两种编号：新的是 VIDE，老的是 VIDA
+_PLAYABLE_RE = re.compile(r"/VID[EA][0-9A-Za-z]+\.shtml")
+_POSTER_RE = re.compile(r'((?:https?:)?//[^"\'\s]*?/fmspic/[^"\'\s]+?-1\.jpg)')
+
+
+def abs_url(url):
+    if url.startswith("//"):
+        return "https:" + url
+    return url
+
+
+def _s(value):
+    """接口里有的字段是 int，统一成字符串再处理。"""
+    return "" if value is None else str(value)
+
+
+def date_of(url):
+    """从 /2026/10/30/ 这样的路径里取出播出日期。"""
+    m = _DATE_RE.search(url)
+    return "%s-%s-%s" % m.groups() if m else ""
+
+
+def clean_text(raw):
+    text = _TAG_RE.sub("", raw or "")
+    text = html_mod.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _thumb_near(text, start, end):
+    """在锚点附近找缩略图；跳过懒加载占位图。"""
+    for window in (text[max(0, start - 900):start], text[end:end + 300]):
+        for m in _IMG_RE.finditer(window):
+            url = m.group(1)
+            if _PLACEHOLDER in url.lower():
+                continue
+            return abs_url(url)
+    return ""
+
+
+# ---------------------------------------------------------------- 首页
+def homepage_items(limit=80, report=None):
+    """抓首页里的视频条目。
+
+    首页有几个入口，按顺序试，第一个有内容的就是结果；每个入口的结果都记进
+    report，方便「首页」抓不到时把原因直接显示在列表里。
+    """
+    for name, url in HOME_SOURCES:
+        try:
+            _, text = net.get_text(url, timeout=15)
+        except Exception as exc:
+            if report is not None:
+                report.append((name, "抓取失败：%s" % exc))
+            continue
+
+        items = parse_home_videos(text, limit)
+        if report is not None:
+            report.append((name, "%d 条" % len(items)))
+        if items:
+            return items
+    return []
+
+
+def parse_home_videos(text, limit=80):
+    """从首页 HTML 里取出 /VIDE…shtml 的链接和标题。"""
+    items = []
+    seen_url = set()
+    seen_title = set()
+    for m in _VIDE_RE.finditer(text):
+        url = m.group(1)
+        if url in seen_url:
+            continue
+        title = clean_text(m.group(2))
+        if len(title) < 4 or title in seen_title:
+            continue
+        seen_url.add(url)
+        seen_title.add(title)
+        items.append(
+            {
+                "title": title,
+                "url": url,
+                "thumb": _thumb_near(text, m.start(), m.end()),
+                "date": date_of(url),
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _poster_of(page_url, timeout=8):
+    """视频页里直接带封面地址（fmspic/日期/guid-1.jpg），抓一次就够。"""
+    try:
+        _, page = net.get_text(page_url, timeout=timeout, referer=HOME_URL)
+    except Exception:
+        return ""
+    m = _POSTER_RE.search(page)
+    return abs_url(m.group(1)) if m else ""
+
+
+def fill_thumbs(items, workers=8, deadline=6.0):
+    """首页是新闻门户，多数条目没有配图；并发去视频页补封面，超时就放弃。"""
+    from concurrent.futures import TimeoutError as FutureTimeout
+    from concurrent.futures import as_completed
+
+    targets = [i for i in items if not i.get("thumb")]
+    if not targets:
+        return items
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    mapping = {}
+    try:
+        for item in targets:
+            mapping[pool.submit(_poster_of, item["url"])] = item
+        try:
+            for future in as_completed(mapping, timeout=deadline):
+                try:
+                    poster = future.result()
+                except Exception:
+                    continue
+                if poster:
+                    mapping[future]["thumb"] = poster
+        except FutureTimeout:
+            pass
+    finally:
+        pool.shutdown(wait=False)
+    return items
+
+
+# ---------------------------------------------------------------- 点播
+# 点播接口会给好几条 HLS 地址，画质差别很大：
+#   hls_url      明文 /asp/hls/ 梯，能正常解码；但 master 受 maxbr 限制，常常只报 480p
+#   hls_enc_url  /asp/enc/hls/ 梯：档位齐全（甚至 1080p），但画面是加密的，
+#                解码满屏 concealing/corrupt，就是「1080P 乱码」
+#   hls_h5e_url / hls_enc2_url  多数情况 403
+# 结论：只走明文 /asp/hls/，并且自己按档位号把 450/850/1200/2000/4000 都试一遍，
+# 用 SPS 解出真实分辨率，确认能解码才交出去。见 download.clear_ladders()。
+HLS_KEYS = ("hls_url", "hls_enc_url", "hls_h5e_url", "hls_enc2_url")
+
+
+def _hls_candidates(info):
+    man = info.get("manifest") or {}
+    out = []
+    for key in HLS_KEYS:
+        url = info.get(key) or man.get(key) or ""
+        if url and url not in out:
+            out.append(url)
+    return out
+
+
+def _plain_base(info):
+    """拿到明文 /asp/hls/ 的 main.m3u8（优先 hls_url；只有加密地址时把 /enc/ 去掉）。"""
+    from . import download as _dl
+
+    url = info.get("hls_url") or ""
+    if not url:
+        man = info.get("manifest") or {}
+        url = man.get("hls_url") or ""
+    if not url:
+        for master in _hls_candidates(info):
+            if "/asp/hls/" in master:
+                url = master
+                break
+            for enc in ("/asp/enc/hls/", "/asp/enc2/hls/", "/asp/h5e/hls/"):
+                if enc in master:
+                    url = master.replace(enc, "/asp/hls/")
+                    break
+            if url:
+                break
+    if not url:
+        return ""
+    return _dl.strip_maxbr(url)
+
+
+def clear_ladders(info):
+    """这个视频所有「明文、真能解码」的档位，从高到低。
+
+    这是播放和下载共用的唯一入口 —— 加密档位会被 SPS 解析这一步天然筛掉。
+    """
+    from . import download as _dl
+
+    base = _plain_base(info)
+    if not base:
+        raise ValueError("没有拿到 HLS 地址")
+
+    rows = _dl.clear_ladders(base)
+    if rows:
+        return rows
+
+    # 兜底：万一按档位号拼不出来（路径不规整），退回 master 自己广告的最高档
+    try:
+        _, text = net.get_text(base, timeout=12, referer="https://tv.cctv.com/")
+    except Exception:
+        text = ""
+    if "#EXT-X-STREAM-INF" in (text or ""):
+        advertised = _dl.parse_master(text, base)
+        advertised.sort(key=_dl.sort_key, reverse=True)
+        if advertised:
+            top = advertised[0]
+            return [{
+                "tier": 0,
+                "url": top["url"],
+                "width": top["width"],
+                "height": top["height"],
+                "bitrate": top["bitrate"],
+                "duration": 0.0,
+                "segments": 0,
+                "size": 0,
+                "clear": False,
+            }]
+    return []
+
+
+def video_info(guid, referer=None):
+    """guid -> 点播接口的原始 JSON（含全部 HLS 地址）。下载功能要拿它摊平各档清晰度。"""
+    info = net.get_json(VIDEO_INFO_API % guid, timeout=15, referer=referer or HOME_URL)
+    if info.get("ack") != "yes":
+        raise ValueError(info.get("tip_msg") or "接口返回失败")
+    return info
+
+
+def hls_masters(info):
+    """点播接口里的所有 HLS 主播放列表地址（排查用）。"""
+    return _hls_candidates(info or {})
+
+
+def page_guid(page_url):
+    """视频页 -> guid。"""
+    _, page = net.get_text(page_url, timeout=20, referer=HOME_URL)
+    m = _GUID_RE.search(page)
+    if not m:
+        raise ValueError("页面上没有找到 guid")
+    return m.group(1)
+
+
+def _resolve_pid(guid, referer=None):
+    """guid -> (stream, title, poster)。视频库/剧集接口直接给 guid，可以少抓一次页面。"""
+    info = video_info(guid, referer=referer)
+
+    rows = clear_ladders(info)
+    if not rows:
+        raise ValueError("没有找到能正常播放的清晰度")
+
+    best = rows[0]
+    return best["url"], info.get("title") or "", info.get("image") or ""
+
+
+def resolve_guid(guid):
+    return _resolve_pid(guid)
+
+
+def resolve_video(page_url):
+    """视频页 -> 可播放 HLS 地址。返回 (stream_url, title, poster)。"""
+    return _resolve_pid(page_guid(page_url), referer=page_url)
+
+
+# ---------------------------------------------------------------- 直播
+# 实测：腾讯云( txy )的直播地址不带 Referer 一律 403，而 Kodi 播放时只会拿
+# 一个裸地址，不带任何头 —— 所以要把 Referer/UA 用 Kodi 的 "|" 后缀一起交给它。
+LIVE_REFERER = "https://tv.cctv.com/"
+LIVE_PROBE_TIMEOUT = 3
+
+
+def _with_kodi_headers(url):
+    return "%s|User-Agent=%s&Referer=%s" % (url, net.UA, LIVE_REFERER)
+
+
+def _probe_hosts(channel, hosts, use_referer, timeout=4.0):
+    """在给定的一组主机里并行探测，返回第一个能返回 #EXTM3U 的 master 地址。"""
+    from concurrent.futures import TimeoutError as FutureTimeout
+    from concurrent.futures import as_completed
+
+    urls = [tpl % channel for tpl in hosts]
+
+    def probe(url):
+        return url if net.probe_m3u8(url, timeout=LIVE_PROBE_TIMEOUT, referer=use_referer) else None
+
+    pool = ThreadPoolExecutor(max_workers=len(urls))
+    try:
+        futures = [pool.submit(probe, u) for u in urls]
+        try:
+            for future in as_completed(futures, timeout=timeout):
+                try:
+                    ok = future.result()
+                except Exception:
+                    continue
+                if ok:
+                    return ok
+        except FutureTimeout:
+            pass
+    finally:
+        # 不能用 with：那会等所有探测都结束，最慢的一个能拖好几秒
+        pool.shutdown(wait=False)
+    return ""
+
+
+def live_url(channel, budget=8.0):
+    """返回可直接交给 Kodi 的直播地址。
+
+    顺序：时移线路(裸) → 传统线路(裸) → 时移线路(带 Referer) → 传统线路(带 Referer)。
+    先找「完全不需要请求头」的，因为那种地址 Kodi 裸着拿就能播，不依赖它是否会把
+    "|头" 传给播放器；实在没有才用 Referer 后缀（腾讯云那条不带 Referer 必 403）。
+    整轮探测有总预算，避免某个死频道让人干等。
+    """
+    deadline = time.monotonic() + budget
+    plans = (
+        (LIVE_HOSTS_HD, False),
+        (LIVE_HOSTS, False),
+        (LIVE_HOSTS_HD, True),
+        (LIVE_HOSTS, True),
+    )
+    for hosts, use_referer in plans:
+        left = deadline - time.monotonic()
+        if left <= 0.5:
+            break
+        url = _probe_hosts(channel, hosts, use_referer, timeout=min(4.0, left))
+        if url:
+            return _with_kodi_headers(url) if use_referer else url
+    return ""
+
+
+# ---------------------------------------------------------------- 搜索
+def search(keyword, page=1, page_size=20):
+    """央视搜索的移动版 JSON 接口。
+
+    桌面版 video.php 被 WAF 拦（403），但移动版 m/if3g_search.php 正常返回 JSON，
+    字段：DRETITLE / PAGELINK / IMAGELINK / DRECONTENT / PUBTIME / DURATION。
+    """
+    from urllib.parse import quote
+
+    url = SEARCH_API % (page, quote(keyword), page_size)
+    _, text = net.get_text(url, timeout=20, referer="https://search.cctv.com/m/", ua=MOBILE_UA)
+
+    data = json.loads(text)
+    total = int(data.get("total") or 0)
+
+    items = []
+    for row in data.get("list") or []:
+        link = _s(row.get("PAGELINK")).strip()
+        if not link:
+            continue
+        title = clean_text(_s(row.get("DRETITLE")))
+        if len(title) < 2:
+            continue
+
+        items.append(
+            {
+                "title": title,
+                "url": link,
+                "thumb": _s(row.get("IMAGELINK")).strip(),
+                "plot": clean_text(_s(row.get("DRECONTENT"))),
+                "date": _s(row.get("PUBTIME"))[:10] or date_of(link),
+                "duration": _s(row.get("DURATION")).strip(),
+                "playable": bool(_PLAYABLE_RE.search(link)),
+                # 同一部剧集的每一集都带相同的 ALBUMID，用它把「剧集」和「单条视频」分开
+                "album": _s(row.get("ALBUMID")).strip(),
+            }
+        )
+    return items, total

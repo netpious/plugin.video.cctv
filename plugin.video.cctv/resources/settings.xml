@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- 这是 Kodi 的「旧版」设置定义（<settings> 不带 version），类型名必须是
+     旧版那一套：text / number / bool / folder / select / enum / slider …
+
+     踩过的坑（2026-10-31 的 kodi.log 实锤）：
+       * 写 type="integer"  → failed to parse old setting definition … of type "integer"
+       * 写 type="string"   → failed to parse old setting definition … of type "string"
+       * 只有 type="bool" 能过
+     结果是整份设置都读不出来：getSettingString 抛 TypeError('Invalid setting type')，
+     日志里一行 "EXCEPTION: Invalid setting type"，设置界面空白，下载目录也改不了。
+     旧版里整数叫 number、文本叫 text、目录叫 folder —— 别用新版那套
+     boolean / integer / string（那是 <settings version="1"> 才搭配的写法）。 -->
+<settings>
+  <category label="常规">
+    <setting id="home_limit" type="number" label="每个板块最多显示条数" default="80"/>
+    <setting id="show_thumb" type="bool" label="显示缩略图" default="true"/>
+  </category>
+  <category label="下载">
+    <setting id="download_path" type="folder" label="下载目录（留空用默认）"
+             default="special://profile/addon_data/plugin.video.cctv/downloads/"
+             option="writeable"/>
+    <setting id="preview_seconds" type="number" label="预览时长（秒）" default="20"/>
+  </category>
+</settings>
