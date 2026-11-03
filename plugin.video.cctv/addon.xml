@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.cctv"
        name="央视网"
-       version="1.3"
+       version="2.1.0"
        provider-name="netpious, dsh">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
@@ -12,20 +12,23 @@
   </extension>
 
   <extension point="xbmc.addon.metadata">
-    <summary lang="zh_CN">在线浏览央视网（cctv.com）中的电视节目和文章：首页、新闻、视频、体育与赛事、4K 专区、栏目、直播与搜索，支持长按预览与下载</summary>
-    <summary lang="en_GB">Watch CCTV (cctv.com) programmes and articles online: home, news, videos, sports and match videos, 4K zone, columns, live channels and search, with preview and download</summary>
+    <summary lang="zh_CN">在线浏览央视网（cctv.com）中的电视节目和文章：首页、新闻、时政、视频、频道、体育与赛事、片库、央视网剧、听音、熊猫、总台春晚、4K 专区、栏目、直播与搜索，支持长按预览与下载</summary>
+    <summary lang="en_GB">Watch CCTV (cctv.com) programmes and articles online: home, news, politics, videos, channels, sports and match videos, library, short dramas, audio, panda, Spring Festival Gala, 4K zone, columns, live channels and search, with preview and download</summary>
     <description lang="zh_CN">在线浏览央视网（cctv.com）中的电视节目和文章。浏览、播放与下载都在 Kodi 原生界面内完成，无需打开外部浏览器。
 
 内容
 
 首页
-按央视网首页自身的板块编排：今日热门、直播导视、片库、看点、收视 TOP 榜、经典影视剧场。
+正在热播与精彩推荐的节目直接铺在首页，点开即播；另有「看点」（今日亚洲、国宝·发现、军事科技、中国舆论场、财经调查、东方时空、今日环球、越战越勇、国家记忆）以及片库、今日热门、收视 TOP 榜、经典影视剧场。
 
 新闻
-要闻、国内、国际、社会、法治、科技、文娱、教育、健康，共九个子栏目，可阅读报道全文。
+要闻、国内、国际、经济、社会、法治、文娱、科技、生活、军事、快看、时政，共十二个子栏目，可阅读报道全文；另有「原创」（联播+、热解读、天天学习、央视快评、锋面、8点见、小央画话）与「更多」（人物、专题）。
 
 视频
 央视网视频库的最新发布。
+
+频道
+央视网首页顶部那排频道：地方、乡村振兴、生态、一带一路、央博、文化、旅游、科普、健康、乐龄、阅读、艺术、数智、5G、产业+，共十五个，每个频道都可翻页浏览。
 
 体育
 19 个赛事频道与 15 个央视名栏。频道取自央视体育的顶部导航，含奥林匹克频道、NBA、CBA、中超、英超、德甲、法甲、意甲、羽毛球、乒乓球、网球、F1、排球、中国足球、国际足球、冬奥会、亚运会等；名栏为央视体育的名牌节目，如体育新闻、体育世界、体坛快讯、天下足球、足球之夜、冠军欧洲、篮球公园、棋牌乐。每个频道均按最新发布列出视频与图文，可逐页翻看。
@@ -34,10 +37,25 @@
 按央视体育的赛程看比赛视频。近期集锦把最近三天所有比赛的集锦合成为一个列表，一步直达视频；也可以按日期（近三周共 21 天）或按联赛（NBA、CBA、英超、中超、意甲、德甲、法甲、西甲、解放者杯）翻看赛程。每场比赛内部列出该场的全部集锦与比赛回顾，并附一份技术统计文本：比分、上下半场或分节、射门、射正、射偏、角球、犯规、越位、黄牌、红牌、控球率（篮球为投篮、三分、罚球、篮板、助攻、抢断、盖帽）。没有关联集锦的场次会直接弹出这份技术统计，不留空目录。
 
 4K 专区
-超高清专区，实测最高 1920×1080 / 4.1 Mbps。
+超高清专区，211 部片目，带封面、可翻页；实测最高 1920×1080 / 4.1 Mbps。
 
 栏目
 348 个电视栏目，先按 CCTV 频道分组，再进入栏目逐期回看。
+
+片库
+电视剧、动画片、纪录片、特别节目四大类，每类都按类别、地区、年份、字母（纪录片与特别节目另有按频道、特别节目另有按节日）分组筛选，结果可逐页翻看。点进一部剧先看到正片，从第 1 集排到大结局；预告、花絮和每集剧情看点收在「看点·花絮」文件夹里。
+
+央视网剧
+央视网剧频道的微短剧：暗渡、表面之下、姐姐的三条簪、我在月球当包工头等，点进去按集播放。
+
+听音
+听音的历史、电视剧等专辑，点进去是分集。
+
+熊猫
+熊猫频道十七个栏目（熊猫播报、熊猫大讲堂、大熊猫故事、熊猫TOP榜、国宝面对面、熊猫一刻…）的节目合在一个列表里，标题前用 [栏目名] 标出出处。
+
+总台春晚
+总台春晚专题：完整回看（4 段）、精彩回顾（46 个节目）、开门迎春晚（16 条）。
 
 直播
 CCTV 各频道在线直播。
@@ -61,12 +79,19 @@ CCTV 各频道在线直播。
 Contents
 
 Home: grouped like the cctv.com homepage - today's highlights, live guide, library, picks, ratings and classic drama.
-News: nine categories (top stories, China, world, society, law, technology, entertainment, education, health), with full article text.
+News: eleven categories (top stories, China, world, business, society, law, entertainment, technology, life, military, Kuaikan) with full article text, plus an Original dropdown (Lianbo+, Hot Reads, Daily Study, CCTV Commentary, Fengmian, 8 O'Clock, Xiaoyang Comics) and a More dropdown (People, Specials).
+Politics: People's Leader Xi Jinping and Xi's Witty Remarks.
 Videos: the latest releases of the cctv.com video library.
+Channels: the fifteen channels from the cctv.com top bar - Local, Rural Revitalisation, Ecology, Belt and Road, Yangbo, Culture, Travel, Science, Health, Senior, Reading, Arts, Digital Intelligence, 5G and Industry+ - each browsable page by page.
 Sports: nineteen competition channels taken from the CCTV Sports top navigation (Olympic Channel, NBA, CBA, Chinese Super League, Premier League, Bundesliga, Ligue 1, Serie A, badminton, table tennis, tennis, Formula 1, volleyball, Chinese football, international football, Winter Olympics, Asian Games and more) plus fifteen signature programmes such as Sports News, World Football, Football Night and Basketball Park. Every channel lists its newest videos and articles, page by page.
 Matches: browse the CCTV Sports schedule and watch each game's highlights and full replays, either from a combined "recent highlights" list, by date (a rolling three-week window) or by league (NBA, CBA, Premier League, Chinese Super League, Serie A, Bundesliga, Ligue 1, La Liga and more). Every game page lists the highlights and also carries a text report: score, half-time or period splits, shots, shots on target, corners, fouls, offsides, cards and possession (for basketball: field goals, three-pointers, free throws, rebounds, assists, steals and blocks). Games without linked highlights show that report directly instead of an empty folder.
 4K zone: ultra-high-definition programmes, up to 1920x1080 / 4.1 Mbps.
 Columns: 348 TV columns, grouped by channel and browsable episode by episode.
+Library: four categories (drama, animation, documentary, special), each filterable by genre, region, year and initial letter - plus channel and festival filters where the site offers them - and browsable page by page. A series opens on its episodes, from episode one to the finale; trailers, behind-the-scenes clips and per-episode highlights live in a separate folder.
+Short dramas: the cctv.com short-drama channel, episode by episode.
+Audio: the Audio (Tingyin) channel's history and drama albums, each with its episodes.
+Panda: videos from the panda channel.
+Spring Festival Gala: full replay (four parts), highlights (46 performances) and the New Year gala show.
 Live: online streams of the CCTV channels.
 Search: keyword search that merges every episode of a series into a single entry.
 

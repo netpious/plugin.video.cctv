@@ -47,6 +47,10 @@ ALBUM_API = (
     "https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew"
     "?id=%s&n=20&p=%d&sort=desc&serviceId=tvcctv&t=jsonp&cb=cb"
 )
+ALBUM_API_SORTED = (
+    "https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew"
+    "?id=%s&n=20&p=%d&sort=%s&serviceId=tvcctv&t=jsonp&cb=cb"
+)
 ALBUM_PAGE_SIZE = 20
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -435,10 +439,15 @@ def column_items(column_url, name="", limit=60):
 
 
 # ---------------------------------------------------------------- 剧集(专辑)
-def album_items(album_id, page=1):
-    """某部剧集的分集列表。返回 (items, total)。"""
+def album_items(album_id, page=1, sort="desc"):
+    """某部剧集的分集列表。返回 (items, total)。
+
+    sort="asc" 时从第 1 集往后排 —— 片库的剧集只有升序才把正片排在前面，
+    倒序第一页全是「看点」（每集的剧情摘要），这是 2.0.2 的一个 bug。
+    """
     _, text = net.get_text(
-        ALBUM_API % (album_id, page), timeout=15, referer="https://tv.cctv.com/"
+        ALBUM_API_SORTED % (album_id, page, sort),
+        timeout=15, referer="https://tv.cctv.com/",
     )
     data = _jsonp(text)["data"]
     total = int(data.get("total") or 0)
@@ -470,6 +479,43 @@ def album_id_of(page_url):
         return ""
     m = _ALBUM_ID_RE.search(page)
     return m.group(0) if m else ""
+
+
+# 「第12集」「第 3 期」「第一讲」都算正片
+_EP_RE = re.compile(r"第\s*[0-9０-９一二三四五六七八九十百]+\s*[集期讲课]")
+
+
+def is_episode(title):
+    return bool(_EP_RE.search(title or ""))
+
+
+def album_episodes(album_id, max_pages=20):
+    """把剧集拆成「正片」，返回 (episodes, total)。
+
+    片库的剧集接口默认倒序，第一页全是「看点」（每集的剧情摘要），
+    正片反而排到最后 —— 这是 2.0.2 的 bug。改成升序后第 1 集在最前，
+    而且正片是连续的一段，遇到没有「第 N 集」的一页就说明正片看完了。
+    """
+    episodes = []
+    total = 0
+    for page in range(1, max_pages + 1):
+        items, total = album_items(album_id, page, sort="asc")
+        if not items:
+            break
+        hit = [it for it in items if is_episode(it["title"])]
+        episodes.extend(hit)
+        if not hit:
+            break
+        if len(episodes) >= total:
+            break
+    return episodes, total
+
+
+def album_extras(album_id, page=1):
+    """看点/预告/花絮这些非正片条目（接口倒序，正好把新发的排前面）。"""
+    items, total = album_items(album_id, page, sort="desc")
+    return [it for it in items if not is_episode(it["title"])], total
+
 
 
 def series_name(title):

@@ -47,7 +47,7 @@ def main():
     if addon_path not in sys.path:
         sys.path.insert(0, addon_path)
 
-    from resources.lib import cctv, download as dl, kodi, portal
+    from resources.lib import cctv, download as dl, kodi, pages, portal
 
     base = sys.argv[0]
     handle = int(sys.argv[1]) if len(sys.argv) > 1 else -1
@@ -60,11 +60,45 @@ def main():
         if mode == "root":
             _root(handle, base, kodi)
         elif mode == "home":
-            _home(handle, base, addon, kodi, portal, params)
+            _home(handle, base, addon, kodi, portal, pages, params)
         elif mode == "news":
-            _news(handle, base, kodi, portal)
+            _news(handle, base, kodi, portal, pages)
         elif mode == "newslist":
             _newslist(handle, base, kodi, portal, params)
+        elif mode == "newsgroup":
+            _news_group(handle, base, kodi, pages, params)
+        elif mode == "more":
+            _root(handle, base, kodi)
+        elif mode == "shizheng":
+            _shizheng(handle, base, kodi, pages)
+        elif mode == "kandian":
+            _kandian(handle, base, kodi, pages)
+        elif mode == "src":
+            _src(handle, base, kodi, pages, params)
+        elif mode == "channels":
+            _channels(handle, base, kodi, pages)
+        elif mode == "chlist":
+            _chlist(handle, base, kodi, pages, params)
+        elif mode == "pianku":
+            _pianku(handle, base, kodi, pages, params)
+        elif mode == "pkfilter":
+            _pk_filter(handle, base, kodi, pages, params)
+        elif mode == "pklist":
+            _pk_list(handle, base, kodi, pages, params)
+        elif mode == "netdrama":
+            _netdrama(handle, base, kodi, pages)
+        elif mode == "netdrama_eps":
+            _netdrama_eps(handle, base, kodi, pages, params)
+        elif mode == "tingyin":
+            _tingyin(handle, base, kodi, pages)
+        elif mode == "tingyin_list":
+            _tingyin_list(handle, base, kodi, pages, params)
+        elif mode == "chunwan":
+            _chunwan(handle, base, kodi, pages)
+        elif mode == "chunwan_board":
+            _chunwan_board(handle, base, kodi, pages, params)
+        elif mode == "panda":
+            _panda(handle, base, kodi, pages)
         elif mode == "article":
             _article(handle, kodi, cctv, portal, params)
         elif mode == "videos":
@@ -84,13 +118,15 @@ def main():
         elif mode == "highlights":
             _highlights(handle, base, kodi, portal)
         elif mode == "fourk":
-            _fourk(handle, base, kodi, portal)
+            _fourk(handle, base, kodi, portal, pages, params)
         elif mode == "columns":
             _columns(handle, base, kodi, portal, params)
         elif mode == "column":
             _column(handle, base, kodi, portal, params)
         elif mode == "album":
             _album(handle, base, kodi, portal, params)
+        elif mode == "albumx":
+            _album_extra(handle, base, kodi, portal, params)
         elif mode == "search":
             _search(handle, base, kodi, cctv, portal, params)
         elif mode == "live":
@@ -121,15 +157,29 @@ def _root(handle, base, kodi):
     kodi.add_folder(handle, base, "首页", "home",
                     plot="央视网首页的内容，按它自己的板块分开")
     kodi.add_folder(handle, base, "新闻", "news",
-                    plot="要闻 / 国内 / 国际 / 社会 / 法治 / 科技 / 文娱 / 教育 / 健康")
+                    plot="要闻 / 国内 / 国际 / 经济 / 社会 / 法治 / 文娱 / 科技 / "
+                         "生活 / 军事 / 快看 / 时政，另有原创与更多")
     kodi.add_folder(handle, base, "视频", "videos",
                     plot="央视网视频库，最新发布")
+    kodi.add_folder(handle, base, "频道", "channels",
+                    plot="央视网首页顶部那排频道：地方、乡村振兴、生态、一带一路、央博、"
+                         "文化、旅游、科普、健康、乐龄、阅读、艺术、数智、5G、产业+")
     kodi.add_folder(handle, base, "体育", "sports",
                     plot="央视体育：19 个频道（NBA、CBA、中超、英超…）+ 15 个名栏节目")
     kodi.add_folder(handle, base, "4K专区", "fourk",
                     plot="4K/超高清专区，明文流，实测 1920x1080")
     kodi.add_folder(handle, base, "栏目", "columns",
                     plot="348 个电视栏目，按 CCTV 频道分组")
+    kodi.add_folder(handle, base, "片库", "pianku",
+                    plot="电视剧 / 动画片 / 纪录片 / 特别节目，可按类别、地区、年份、字母筛选")
+    kodi.add_folder(handle, base, "央视网剧", "netdrama",
+                    plot="央视网剧（微短剧）：暗渡、表面之下…点进去按集看")
+    kodi.add_folder(handle, base, "听音", "tingyin",
+                    plot="听音：历史、电视剧等音频专辑")
+    kodi.add_folder(handle, base, "熊猫", "panda",
+                    plot="熊猫频道的视频")
+    kodi.add_folder(handle, base, "总台春晚", "chunwan",
+                    plot="总台春晚专题：完整回看、精彩回顾、开门迎春晚")
     kodi.add_folder(handle, base, "直播", "live",
                     plot="CCTV 各频道在线直播")
     kodi.add_folder(handle, base, "搜索", "search",
@@ -137,24 +187,335 @@ def _root(handle, base, kodi):
     kodi.end_directory(handle)
 
 
-# ---------------------------------------------------------------- 首页
-def _home(handle, base, addon, kodi, portal, params):
-    sections = portal.home_sections()
-    if not sections:
-        kodi.add_folder(handle, base, "首页没有抓到内容，点这里重试", "home")
-        kodi.end_directory(handle)
-        kodi.notify("首页抓取失败", error=True)
+# ---------------------------------------------------------------- 时政
+def _shizheng(handle, base, kodi, pages):
+    for i, src in enumerate(pages.SHIZHENG):
+        kodi.add_folder(handle, base, src["name"], "src",
+                        g="shizheng", i=i, plot="时政 · %s" % src["name"])
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 频道
+def _channels(handle, base, kodi, pages):
+    for ch in pages.CHANNELS:
+        kodi.add_folder(handle, base, ch["name"], "chlist", c=ch["name"],
+                        plot=ch.get("plot") or ch["name"])
+    kodi.end_directory(handle)
+
+
+def _chlist(handle, base, kodi, pages, params):
+    name = params.get("c") or ""
+    page = int(params.get("page") or 1)
+    if not pages.channel(name):
+        kodi.end_directory(handle, succeeded=False)
         return
 
+    items, total = pages.channel_items(name, page)
+    if not items:
+        kodi.add_folder(handle, base, "这个频道没抓到内容，点这里重试", "chlist",
+                        c=name, page=page)
+        kodi.end_directory(handle)
+        return
+
+    _render_items(handle, base, kodi, items)
+    size = pages.MIX_PAGE_SIZE
+    if total and page * size < min(total, 1000):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "chlist",
+                        c=name, page=page + 1, plot="%s 共约 %d 条" % (name, total))
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 通用列表
+def _src(handle, base, kodi, pages, params):
+    """新闻的原创/更多、时政，都是「一组固定栏目」，共用这个入口。"""
+    group = params.get("g") or ""
+    idx = int(params.get("i") or 0)
+    table = {
+        "shizheng": pages.SHIZHENG,
+        "original": pages.ORIGINAL,
+        "morenews": pages.MORE_NEWS,
+        "newsextra": pages.NEWS_EXTRA,
+    }.get(group) or []
+    if idx < 0 or idx >= len(table):
+        kodi.end_directory(handle, succeeded=False)
+        return
+    src = table[idx]
+    items, _total = pages.source_items(src, 1)
+    if not items:
+        kodi.add_folder(handle, base, "没抓到内容，点这里重试", "src", g=group, i=idx)
+        kodi.end_directory(handle)
+        return
+    _render_items(handle, base, kodi, items)
+    kodi.end_directory(handle)
+
+
+def _news_group(handle, base, kodi, pages, params):
+    group = params.get("g") or ""
+    table = {"original": pages.ORIGINAL, "morenews": pages.MORE_NEWS}.get(group) or []
+    for i, src in enumerate(table):
+        kodi.add_folder(handle, base, src["name"], "src", g=group, i=i,
+                        plot="央视网·%s" % src["name"])
+    kodi.end_directory(handle)
+
+
+def _render_items(handle, base, kodi, items):
+    """文章 → 阅读页；视频 → 播放器；剧集 → 分集列表。"""
+    for it in items:
+        kind = it.get("kind")
+        if kind == "netdrama":
+            kodi.add_folder(
+                handle, base, it["title"], "netdrama_eps",
+                thumb=it.get("thumb") or None,
+                plot=it.get("plot") or it["title"],
+                mid=it["mid"],
+            )
+            continue
+        if kind == "series" and it.get("album"):
+            kodi.add_folder(
+                handle, base, it["title"], "album",
+                thumb=it.get("thumb") or None,
+                plot=it.get("plot") or it["title"],
+                id=it["album"],
+            )
+            continue
+        if kind in ("video", "episode"):
+            kodi.add_playable(
+                handle, base, it["title"], "play",
+                thumb=it.get("thumb") or None,
+                plot=it.get("plot") or it["title"],
+                date=it.get("date") or "",
+                g=it.get("guid") or "",
+                u=quote(it["url"], safe="") if it.get("url") else "",
+                context=kodi.download_context(
+                    base, "download", "下载…",
+                    g=it.get("guid") or "", u=quote(it["url"], safe=""), t=it["title"],
+                ),
+            )
+            continue
+        kodi.add_folder(
+            handle, base, it["title"], "article",
+            thumb=it.get("thumb") or None,
+            plot=it.get("plot") or it["title"],
+            date=it.get("date") or "",
+            u=quote(it["url"], safe=""),
+            context=kodi.download_context(
+                base, "dltext", "下载文本…", u=quote(it["url"], safe=""), t=it["title"]
+            ),
+        )
+
+
+# ---------------------------------------------------------------- 片库
+def _pianku(handle, base, kodi, pages, params):
+    cat = params.get("cat") or ""
+    if not cat:
+        for row in pages.PIANKU_CATS:
+            kodi.add_folder(handle, base, row["name"], "pianku", cat=row["name"],
+                            plot="片库 · %s" % row["name"])
+        kodi.end_directory(handle)
+        return
+
+    groups = pages.pianku_groups(cat)
+    if not groups:
+        kodi.end_directory(handle, succeeded=False)
+        return
+    for gkey, glabel, values in groups:
+        kodi.add_folder(handle, base, "%s（%d）" % (glabel, len(values) - 1), "pkfilter",
+                        cat=cat, g=gkey, plot="%s · %s" % (cat, glabel))
+    kodi.add_folder(handle, base, "全部（按最新）", "pklist", cat=cat, g="", v="", page=1,
+                    plot="%s 的全部内容，按最新排序" % cat)
+    kodi.end_directory(handle)
+
+
+def _pk_filter(handle, base, kodi, pages, params):
+    cat = params.get("cat") or ""
+    gkey = params.get("g") or ""
+    groups = dict((g, v) for g, _, v in pages.pianku_groups(cat))
+    values = groups.get(gkey) or []
+    if not values:
+        kodi.end_directory(handle, succeeded=False)
+        return
+    for label, value in values:
+        kodi.add_folder(handle, base, label, "pklist",
+                        cat=cat, g=gkey, v=value, page=1,
+                        plot="%s · %s" % (cat, label))
+    kodi.end_directory(handle)
+
+
+def _pk_list(handle, base, kodi, pages, params):
+    cat = params.get("cat") or ""
+    gkey = params.get("g") or ""
+    value = params.get("v") or ""
+    page = int(params.get("page") or 1)
+    filters = {gkey: value} if gkey and value else {}
+
+    items, total = pages.pianku_items(cat, page, filters)
+    if not items:
+        kodi.add_folder(handle, base, "这一类没有内容，点这里重试", "pklist",
+                        cat=cat, g=gkey, v=value, page=page)
+        kodi.end_directory(handle)
+        return
+
+    for it in items:
+        label = it["title"]
+        if it.get("label"):
+            label = "%s（%s）" % (label, it["label"])
+        kodi.add_folder(
+            handle, base, label, "album",
+            thumb=it.get("thumb") or None,
+            plot=it.get("plot") or it["title"],
+            id=it.get("album") or "",
+        )
+
+    size = pages.PIANKU_PAGE_SIZE
+    if page * size < min(total, pages.PIANKU_MAX):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "pklist",
+                        cat=cat, g=gkey, v=value, page=page + 1,
+                        plot="共约 %d 部" % total)
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 央视网剧
+def _netdrama(handle, base, kodi, pages):
+    items, _total = pages.netdrama_items(1)
+    if not items:
+        kodi.add_folder(handle, base, "网剧没抓到内容，点这里重试", "netdrama")
+        kodi.end_directory(handle)
+        return
+    _render_items(handle, base, kodi, items)
+    kodi.end_directory(handle)
+
+
+def _netdrama_eps(handle, base, kodi, pages, params):
+    mid = params.get("mid") or ""
+    page = int(params.get("page") or 1)
+    if not mid:
+        kodi.end_directory(handle, succeeded=False)
+        return
+    items, total = pages.netdrama_episodes(mid, page)
+    if not items:
+        # 有的网剧还没上传分集（实测 20 部里有 1 部是空的），不要留假入口
+        kodi.notify("这一部还没有可播放的分集")
+        kodi.end_directory(handle, succeeded=False)
+        return
+    _render_items(handle, base, kodi, items)
+    size = pages.NETDRAMA_PAGE_SIZE
+    if page * size < min(total, 500):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "netdrama_eps",
+                        mid=mid, page=page + 1, plot="共 %d 集" % total)
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 听音
+def _tingyin(handle, base, kodi, pages):
+    for i, sec in enumerate(pages.TY_SECTIONS):
+        kodi.add_folder(handle, base, sec["name"], "tingyin_list",
+                        i=i, plot="听音 · %s" % sec["name"])
+    kodi.end_directory(handle)
+
+
+def _tingyin_list(handle, base, kodi, pages, params):
+    idx = int(params.get("i") or 0)
+    page = int(params.get("page") or 1)
+    if idx < 0 or idx >= len(pages.TY_SECTIONS):
+        kodi.end_directory(handle, succeeded=False)
+        return
+    sec = pages.TY_SECTIONS[idx]
+    items, total = pages.ty_items(sec["pid"], page)
+    if not items:
+        kodi.add_folder(handle, base, "没有内容，点这里重试", "tingyin_list", i=idx, page=page)
+        kodi.end_directory(handle)
+        return
+    _render_items(handle, base, kodi, items)
+    size = pages.TY_PAGE_SIZE
+    if page * size < min(total, 1000):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "tingyin_list",
+                        i=idx, page=page + 1, plot="共约 %d 个专辑" % total)
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 总台春晚
+def _chunwan(handle, base, kodi, pages):
+    boards = pages.chunwan_boards()
+    if not boards:
+        kodi.add_folder(handle, base, "春晚专题没抓到内容，点这里重试", "chunwan")
+        kodi.end_directory(handle)
+        return
+    for i, (name, items) in enumerate(boards):
+        kodi.add_folder(handle, base, "%s（%d）" % (name, len(items)), "chunwan_board",
+                        i=i, thumb=items[0].get("thumb") or None,
+                        plot="总台春晚 · %s" % name)
+    kodi.end_directory(handle)
+
+
+def _chunwan_board(handle, base, kodi, pages, params):
+    idx = int(params.get("i") or 0)
+    boards = pages.chunwan_boards()
+    if idx < 0 or idx >= len(boards):
+        kodi.end_directory(handle, succeeded=False)
+        return
+    _render_items(handle, base, kodi, boards[idx][1])
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 熊猫
+def _panda(handle, base, kodi, pages):
+    items, _total = pages.panda_section_items()
+    if not items:
+        items, _total = pages.panda_items()
+    if not items:
+        kodi.add_folder(handle, base, "熊猫频道没抓到内容，点这里重试", "panda")
+        kodi.end_directory(handle)
+        return
+    _render_items(handle, base, kodi, items)
+    kodi.end_directory(handle)
+
+
+# ---------------------------------------------------------------- 首页
+def _home(handle, base, addon, kodi, portal, pages, params):
     sec = params.get("sec")
+
     if sec is None or sec == "":
-        total = sum(len(items) for _, items in sections)
-        kodi.log("home: %d 个板块，共 %d 条" % (len(sections), total))
+        # 2.1：首页根目录直接放「正在热播」和「精彩推荐」的视频，
+        # 直播导视去掉了（直播本来就点不开，留着是个死入口）。
+        hot = pages.home_hotplay()
+        picks = pages.home_picks()
+        kodi.log("home: 正在热播 %d 条，精彩推荐 %d 条" % (len(hot), len(picks)))
+
+        for it in hot:
+            kodi.add_playable(
+                handle, base, it["title"], "play",
+                thumb=it.get("thumb") or None,
+                plot="正在热播 · %s" % it["title"],
+                u=quote(it["url"], safe=""),
+                context=kodi.download_context(
+                    base, "download", "下载…", u=quote(it["url"], safe=""), t=it["title"]),
+            )
+        for it in picks:
+            kodi.add_playable(
+                handle, base, it["title"], "play",
+                plot="精彩推荐 · %s" % it["title"],
+                u=quote(it["url"], safe=""),
+                context=kodi.download_context(
+                    base, "download", "下载…", u=quote(it["url"], safe=""), t=it["title"]),
+            )
+
+        kodi.add_folder(handle, base, "看点（%d 个栏目）" % len(pages.KANDIAN_COLUMNS),
+                        "kandian", plot="看点：今日亚洲、国宝·发现、军事科技…")
+
+        sections = portal.home_sections() or []
+        skip = ("直播导视", "看点")
         for i, (name, items) in enumerate(sections):
+            if any(s in name for s in skip):
+                continue
             kodi.add_folder(handle, base, "%s（%d）" % (name, len(items)), "home",
                             sec=i, thumb=items[0].get("thumb") or None,
                             plot="首页板块：%s" % name)
         kodi.end_directory(handle)
+        return
+
+    sections = portal.home_sections()
+    if not sections:
+        kodi.end_directory(handle, succeeded=False)
         return
 
     try:
@@ -209,10 +570,30 @@ def _home(handle, base, addon, kodi, portal, params):
 
 
 # ---------------------------------------------------------------- 新闻
-def _news(handle, base, kodi, portal):
-    for col, name in portal.NEWS_COLUMNS:
-        kodi.add_folder(handle, base, name, "newslist",
-                        c=col, plot="央视网·%s" % name)
+def _news(handle, base, kodi, portal, pages):
+    """新闻频道那条子导航：新闻/国内/国际/经济/社会/法治/图片/文娱/科技/生活/
+    军事/快看，外加「原创」和「更多」两个下拉。"""
+    names = (("news", "要闻"), ("china", "国内"), ("world", "国际"),
+             ("economy", "经济"), ("society", "社会"), ("law", "法治"),
+             ("ent", "文娱"), ("tech", "科技"),
+             ("life", "生活"), ("military", "军事"), ("kuaikan", "快看"))
+    extra = dict((src["name"], i) for i, src in enumerate(pages.NEWS_EXTRA))
+
+    for key, label in names:
+        if key in extra:
+            kodi.add_folder(handle, base, label, "src", g="newsextra", i=extra[key],
+                            plot="央视网·%s" % label)
+        else:
+            kodi.add_folder(handle, base, label, "newslist", c=key,
+                            plot="央视网·%s" % label)
+
+    kodi.add_folder(handle, base, "时政", "shizheng",
+                    plot="人民领袖习近平、习式妙语")
+    kodi.add_folder(handle, base, "原创（%d）" % len(pages.ORIGINAL), "newsgroup",
+                    g="original",
+                    plot="联播+ / 热解读 / 天天学习 / 央视快评 / 锋面 / 8点见 / 小央画话")
+    kodi.add_folder(handle, base, "更多（%d）" % len(pages.MORE_NEWS), "newsgroup",
+                    g="morenews", plot="人物 / 专题")
     kodi.end_directory(handle)
 
 
@@ -662,22 +1043,28 @@ def _highlights(handle, base, kodi, portal):
 
 
 # ---------------------------------------------------------------- 4K 专区
-def _fourk(handle, base, kodi, portal):
-    items = portal.four_k_items()
+def _kandian(handle, base, kodi, pages):
+    for name, url in pages.KANDIAN_COLUMNS:
+        kodi.add_folder(handle, base, name, "column",
+                        u=quote(url, safe=""), n=name,
+                        plot="看点 · %s" % name)
+    kodi.end_directory(handle)
+
+
+def _fourk(handle, base, kodi, portal, pages, params):
+    page = int(params.get("page") or 1)
+    items, total = pages.fourk_albums(page)
     if not items:
         kodi.add_folder(handle, base, "4K 专区暂时没有抓到内容，点这里重试", "fourk")
         kodi.end_directory(handle)
-        kodi.notify("4K 专区抓取失败", error=True)
         return
-    for it in items:
-        kodi.add_playable(handle, base, it["title"], "play",
-                          thumb=it.get("thumb") or None,
-                          plot=it.get("plot") or it["title"],
-                          u=quote(it["url"], safe=""),
-                          context=kodi.download_context(
-                              base, "download", "下载…",
-                              u=quote(it["url"], safe=""), t=it["title"],
-                          ))
+    kodi.log("4k page %d: %d/%d" % (page, len(items), total))
+
+    _render_items(handle, base, kodi, items)
+
+    if page * pages.FOURK_PAGE_SIZE < min(total, 500):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "fourk",
+                        page=page + 1, plot="4K 专区共 %d 部" % total)
     kodi.end_directory(handle)
 
 
@@ -747,12 +1134,34 @@ def _album(handle, base, kodi, portal, params):
     if not album:
         kodi.end_directory(handle, succeeded=False)
         return
+
+    # 片库的剧集默认是倒序，第一页全是「看点」，正片排到最后。先按升序把正片捞出来。
+    episodes, total = portal.album_episodes(album)
+    if episodes:
+        _album_rows(handle, base, kodi, episodes)
+        rest = total - len(episodes)
+        if rest > 0:
+            kodi.add_folder(handle, base, "看点·花絮（%d）" % rest, "albumx",
+                            id=album, page=1,
+                            plot="预告、花絮、每集剧情看点，共 %d 条" % rest)
+        kodi.end_directory(handle)
+        return
+
     items, total = portal.album_items(album, page)
     if not items:
         kodi.add_folder(handle, base, "没有分集，点这里重试", "album", id=album, page=page)
         kodi.end_directory(handle)
         return
 
+    _album_rows(handle, base, kodi, items)
+
+    if page * portal.ALBUM_PAGE_SIZE < min(total, 1000):
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "album",
+                        id=album, page=page + 1, plot="共约 %d 集" % total)
+    kodi.end_directory(handle)
+
+
+def _album_rows(handle, base, kodi, items):
     for it in items:
         kodi.add_playable(
             handle, base, it["title"], "play",
@@ -768,10 +1177,29 @@ def _album(handle, base, kodi, portal, params):
             ),
         )
 
+
+def _album_extra(handle, base, kodi, portal, params):
+    """剧集里的看点/花絮单独一个文件夹。"""
+    album = params.get("id") or ""
+    page = int(params.get("page") or 1)
+    if not album:
+        kodi.end_directory(handle, succeeded=False)
+        return
+
+    items, total = portal.album_extras(album, page)
+    if not items:
+        kodi.add_folder(handle, base, "没有看点，点这里重试", "albumx",
+                        id=album, page=page)
+        kodi.end_directory(handle)
+        return
+
+    _album_rows(handle, base, kodi, items)
+
     if page * portal.ALBUM_PAGE_SIZE < min(total, 1000):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "album",
-                        id=album, page=page + 1, plot="共约 %d 集" % total)
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "albumx",
+                        id=album, page=page + 1, plot="共约 %d 条" % total)
     kodi.end_directory(handle)
+
 
 
 # ---------------------------------------------------------------- 搜索
