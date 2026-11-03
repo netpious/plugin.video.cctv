@@ -154,36 +154,25 @@ def main():
 
 # ---------------------------------------------------------------- 菜单
 def _root(handle, base, kodi):
+    # 只有「首页」「新闻」写简介：把里面的子栏目用斜杠列出来，别的都不写。
     kodi.add_folder(handle, base, "首页", "home",
-                    plot="央视网首页的内容，按它自己的板块分开")
+                    plot="正在热播 / 精彩推荐 / 看点 / 片库 / 今日热门 / 收视TOP榜 / "
+                         "经典影视剧场")
     kodi.add_folder(handle, base, "新闻", "news",
                     plot="要闻 / 国内 / 国际 / 经济 / 社会 / 法治 / 文娱 / 科技 / "
-                         "生活 / 军事 / 快看 / 时政，另有原创与更多")
-    kodi.add_folder(handle, base, "视频", "videos",
-                    plot="央视网视频库，最新发布")
-    kodi.add_folder(handle, base, "频道", "channels",
-                    plot="央视网首页顶部那排频道：地方、乡村振兴、生态、一带一路、央博、"
-                         "文化、旅游、科普、健康、乐龄、阅读、艺术、数智、5G、产业+")
-    kodi.add_folder(handle, base, "体育", "sports",
-                    plot="央视体育：19 个频道（NBA、CBA、中超、英超…）+ 15 个名栏节目")
-    kodi.add_folder(handle, base, "4K专区", "fourk",
-                    plot="4K/超高清专区，明文流，实测 1920x1080")
-    kodi.add_folder(handle, base, "栏目", "columns",
-                    plot="348 个电视栏目，按 CCTV 频道分组")
-    kodi.add_folder(handle, base, "片库", "pianku",
-                    plot="电视剧 / 动画片 / 纪录片 / 特别节目，可按类别、地区、年份、字母筛选")
-    kodi.add_folder(handle, base, "央视网剧", "netdrama",
-                    plot="央视网剧（微短剧）：暗渡、表面之下…点进去按集看")
-    kodi.add_folder(handle, base, "听音", "tingyin",
-                    plot="听音：历史、电视剧等音频专辑")
-    kodi.add_folder(handle, base, "熊猫", "panda",
-                    plot="熊猫频道的视频")
-    kodi.add_folder(handle, base, "总台春晚", "chunwan",
-                    plot="总台春晚专题：完整回看、精彩回顾、开门迎春晚")
-    kodi.add_folder(handle, base, "直播", "live",
-                    plot="CCTV 各频道在线直播")
-    kodi.add_folder(handle, base, "搜索", "search",
-                    plot="输入关键词，搜索央视网视频")
+                         "生活 / 军事 / 快看 / 时政 / 原创 / 更多")
+    kodi.add_folder(handle, base, "视频", "videos")
+    kodi.add_folder(handle, base, "频道", "channels")
+    kodi.add_folder(handle, base, "体育", "sports")
+    kodi.add_folder(handle, base, "4K专区", "fourk")
+    kodi.add_folder(handle, base, "栏目", "columns")
+    kodi.add_folder(handle, base, "片库", "pianku")
+    kodi.add_folder(handle, base, "央视网剧", "netdrama")
+    kodi.add_folder(handle, base, "听音", "tingyin")
+    kodi.add_folder(handle, base, "熊猫", "panda")
+    kodi.add_folder(handle, base, "总台春晚", "chunwan")
+    kodi.add_folder(handle, base, "直播", "live")
+    kodi.add_folder(handle, base, "搜索", "search")
     kodi.end_directory(handle)
 
 
