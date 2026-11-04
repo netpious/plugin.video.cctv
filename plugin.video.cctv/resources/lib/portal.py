@@ -1340,14 +1340,14 @@ def sports_highlights(days=CBS_HIGHLIGHT_DAYS, progress=None):
 
 # ---------------------------------------------------------------- 搜索（带剧集归并）
 def search_grouped(keyword, page=1, page_size=20):
-    """搜索，并把同一部剧集的多条结果合并成一个「剧集」条目。
+    """视频搜索，并把同一部剧集的多条结果合并成一个「剧集」条目。
 
     央视搜索结果里同一部剧的每一集都带相同的 ALBUMID，浏览器里是一个剧集入口，
     点进去才看分集；这里照做。
     """
     from . import cctv as _cctv
 
-    items, total = _cctv.search(keyword, page, page_size)
+    items, total = _cctv.search(keyword, page, page_size, kind="video")
     out = []
     seen_album = set()
     for it in items:
@@ -1370,3 +1370,29 @@ def search_grouped(keyword, page=1, page_size=20):
             }
         )
     return out, total
+
+
+def search_audio(keyword, page=1, page_size=20):
+    """音频搜索（网页搜索的「音频」页签，kind=audio），给「听音」用。
+
+    音频条目本身也是视频页（.../VIDE….shtml?guid=…），播放/下载直接复用现成链路。
+    guid 必须从接口的 DETAILSID 拿：音频页面上没有 guid 变量，解析页面是拿不到的。
+    """
+    from . import cctv as _cctv
+
+    rows, total = _cctv.search(keyword, page, page_size, kind="audio")
+    items = []
+    for it in rows:
+        items.append(
+            {
+                "kind": "audio",
+                "title": it["title"],
+                "url": it["url"],
+                "guid": it.get("guid") or "",
+                "thumb": it.get("thumb") or "",
+                "plot": it.get("plot") or it["title"],
+                "date": it.get("date") or "",
+                "duration": it.get("duration") or "",
+            }
+        )
+    return items, total

@@ -24,7 +24,7 @@ MOBILE_UA = (
 VIDEO_INFO_API = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid=%s"
 SEARCH_API = (
     "https://search.cctv.com/m/if3g_search.php"
-    "?page=%d&qtext=%s&type=video&sort=&pageSize=%d&channel="
+    "?page=%d&qtext=%s&type=%s&sort=relevance&pageSize=%d&channel="
 )
 
 # 直播线路，两套：
@@ -445,15 +445,22 @@ def live_url(channel, budget=8.0):
 
 
 # ---------------------------------------------------------------- 搜索
-def search(keyword, page=1, page_size=20):
+def search(keyword, page=1, page_size=20, kind="video"):
     """央视搜索的移动版 JSON 接口。
 
     桌面版 video.php 被 WAF 拦（403），但移动版 m/if3g_search.php 正常返回 JSON，
     字段：DRETITLE / PAGELINK / IMAGELINK / DRECONTENT / PUBTIME / DURATION。
+
+    kind 就是网页搜索的三个页签：article（网页/文章）、video（视频）、audio（音频）。
+    本插件只用 video 和 audio —— 文章的搜索还没做。
+
+    2.1.3：sort 必须是 relevance。网页端（search.cctv.com）发的就是 relevance，
+    而这里以前留空，个别关键词会被后端当成「没有结果」——例如搜「新闻」直接回
+    total=0，同一个词在网页端有 600 多万条。这就是「搜索抓的不全」的根因。
     """
     from urllib.parse import quote
 
-    url = SEARCH_API % (page, quote(keyword), page_size)
+    url = SEARCH_API % (page, quote(keyword), kind or "video", page_size)
     _, text = net.get_text(url, timeout=20, referer="https://search.cctv.com/m/", ua=MOBILE_UA)
 
     data = json.loads(text)
@@ -479,6 +486,8 @@ def search(keyword, page=1, page_size=20):
                 "playable": bool(_PLAYABLE_RE.search(link)),
                 # 同一部剧集的每一集都带相同的 ALBUMID，用它把「剧集」和「单条视频」分开
                 "album": _s(row.get("ALBUMID")).strip(),
+                # 音频条目的页面里没有 guid 变量，但接口直接给了（就是 ?guid= 那个值）
+                "guid": _s(row.get("DETAILSID")).strip(),
             }
         )
     return items, total

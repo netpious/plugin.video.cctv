@@ -93,6 +93,8 @@ def main():
             _tingyin(handle, base, kodi, pages)
         elif mode == "tingyin_list":
             _tingyin_list(handle, base, kodi, pages, params)
+        elif mode == "ty_search":
+            _ty_search(handle, base, kodi, portal, params)
         elif mode == "chunwan":
             _chunwan(handle, base, kodi, pages)
         elif mode == "chunwan_board":
@@ -396,9 +398,64 @@ def _netdrama_eps(handle, base, kodi, pages, params):
 
 # ---------------------------------------------------------------- 听音
 def _tingyin(handle, base, kodi, pages):
+    # 2.1.3：网页搜索的第三个页签是「音频」，放到听音里单独搜；
+    # 根菜单的「搜索」只搜视频（文章的搜索还没做）。
+    kodi.add_folder(handle, base, "搜索音频", "ty_search",
+                    plot="按关键词搜央视网的音频节目（对应网页搜索的「音频」一栏）")
     for i, sec in enumerate(pages.TY_SECTIONS):
         kodi.add_folder(handle, base, sec["name"], "tingyin_list",
                         i=i, plot="听音 · %s" % sec["name"])
+    kodi.end_directory(handle)
+
+
+def _ty_search(handle, base, kodi, portal, params):
+    """听音 → 搜索音频：用搜索接口的 audio 页签，条目直接可播、可长按下载。"""
+    keyword = (params.get("q") or "").strip()
+    if not keyword:
+        keyword = xbmcgui.Dialog().input("搜索音频", type=xbmcgui.INPUT_ALPHANUM)
+        if not keyword:
+            kodi.end_directory(handle, succeeded=False)
+            return
+
+    page = int(params.get("page") or 1)
+    try:
+        items, total = portal.search_audio(keyword, page)
+    except Exception as exc:
+        kodi.log("audio search failed: %r" % exc, xbmc.LOGWARNING)
+        kodi.notify("音频搜索失败：%s" % exc, error=True)
+        kodi.add_folder(handle, base, "抓取失败，点这里重试", "ty_search",
+                        q=keyword, page=page)
+        kodi.end_directory(handle)
+        return
+
+    if not items:
+        kodi.notify("没有找到「%s」的音频" % keyword, error=True)
+        kodi.end_directory(handle, succeeded=False)
+        return
+
+    kodi.log("audio search %s p%d: %d 条（共约 %d）" % (keyword, page, len(items), total))
+    for it in items:
+        url = quote(it["url"], safe="")
+        guid = it.get("guid") or ""
+        plot = it.get("plot") or it["title"]
+        if it.get("date"):
+            plot = "%s\n\n%s" % (it["date"], plot)
+        kodi.add_playable(
+            handle, base, it["title"], "play",
+            thumb=it.get("thumb") or None,
+            plot=plot,
+            date=it.get("date") or "",
+            duration=it.get("duration") or "",
+            g=guid,
+            u=url,
+            context=kodi.download_context(
+                base, "download", "下载…", g=guid, u=url, t=it["title"],
+            ),
+        )
+
+    if total > page * 20:
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "ty_search",
+                        q=keyword, page=page + 1, plot="共约 %d 条音频" % total)
     kodi.end_directory(handle)
 
 
