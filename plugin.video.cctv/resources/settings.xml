@@ -15,6 +15,10 @@
     <setting id="home_limit" type="number" label="每个板块最多显示条数" default="80"/>
     <setting id="show_thumb" type="bool" label="显示缩略图" default="true"/>
   </category>
+  <category label="播放">
+    <setting id="h5e_play" type="bool"
+             label="高画质播放（本地解密 720P/1080P）" default="true"/>
+  </category>
   <category label="下载">
     <setting id="download_path" type="folder" label="下载目录（留空用默认）"
              default="special://profile/addon_data/plugin.video.cctv/downloads/"

@@ -132,9 +132,9 @@ def main():
         elif mode == "live":
             _live(handle, base, kodi, cctv)
         elif mode == "play":
-            _play(handle, kodi, cctv, params)
+            _play(handle, addon, kodi, cctv, params)
         elif mode == "liveplay":
-            _live_play(handle, kodi, cctv, params)
+            _live_play(handle, addon, kodi, cctv, params)
         elif mode == "download":
             _download(handle, addon, kodi, dl, params)
         elif mode == "dltext":
@@ -1250,38 +1250,166 @@ def _live(handle, base, kodi, cctv):
 
 
 # ---------------------------------------------------------------- 播放
-def _play(handle, kodi, cctv, params):
+def _start_decrypted(info, kodi):
+    """起解密代理，返回 Playback；不适用就返回 None（调用方退回明文）。"""
+    from resources.lib import h5eplay
+
+    master, which = h5eplay.pick_h5e(info or {})
+    if not master:
+        return None
+    player = h5eplay.Playback(master)
+    player.start()
+    # 先把第一片解好：不然 Kodi 打开播放器后要干等两三秒，容易判超时
+    try:
+        player._segment_bytes(0)
+    except Exception as exc:
+        kodi.log("首片解密失败，退回明文：%r" % exc, xbmc.LOGWARNING)
+        player.stop()
+        return None
+    kodi.log("加密播放已就绪：%s %s" % (which, player.url))
+    return player
+
+
+def _hold_playback(player, kodi, api=None, monitor=None, grace=20.0):
+    """代理要活到播放结束为止：插件进程一退出，本地服务就没了。
+
+    这里只负责「陪跑」，任何异常都不许冒出去 —— 一旦冒出去，
+    外层会把已经成功的 setResolvedUrl 又改写成失败，用户看到的就是「播放失败」。
+    api / monitor / grace 只是给测试注入用的。
+    """
+    import time
+
+    def nap(ms):
+        try:
+            xbmc.sleep(ms)
+        except AttributeError:
+            time.sleep(ms / 1000.0)
+
+    if api is None:
+        try:
+            api = xbmc.Player()
+        except Exception as exc:
+            kodi.log("拿不到播放器，直接收摊：%r" % exc, xbmc.LOGWARNING)
+            player.stop()
+            return
+
+    try:
+        monitor = monitor if monitor is not None else xbmc.Monitor()
+
+        def aborting():
+            try:
+                return bool(monitor.abortRequested())
+            except Exception:
+                return False
+    except Exception:
+        def aborting():
+            return False
+
+    try:
+        deadline = time.time() + grace
+        started = False
+        while time.time() < deadline:
+            try:
+                if api.isPlaying():
+                    started = True
+                    break
+            except Exception:
+                break
+            if aborting():
+                break
+            nap(300)
+
+        if not started:
+            kodi.log("播放没有起来，关掉解密代理", xbmc.LOGWARNING)
+            return
+
+        while True:
+            try:
+                if not api.isPlaying():
+                    break
+            except Exception:
+                break
+            if aborting():
+                break
+            nap(500)
+    finally:
+        player.stop()
+
+
+def _play(handle, addon, kodi, cctv, params):
     guid = params.get("g") or ""
     page_url = unquote(params.get("u") or "")
 
-    if guid:
+    if not guid:
+        if not page_url:
+            kodi.fail(handle, "缺少视频地址")
+            return
         try:
-            stream, title, poster = cctv.resolve_guid(guid)
+            guid = cctv.page_guid(page_url)
         except Exception as exc:
             kodi.fail(handle, "解析失败：%s" % exc)
             return
-        kodi.play(handle, stream, title=title, thumb=poster)
-        return
 
-    if not page_url:
-        kodi.fail(handle, "缺少视频地址")
-        return
     try:
-        stream, title, poster = cctv.resolve_video(page_url)
+        info = cctv.video_info(guid, referer=page_url or None)
+        rows = cctv.clear_ladders(info)
+        if not rows:
+            raise ValueError("没有找到能正常播放的清晰度")
+        stream = rows[0]["url"]
+        clear_height = int(rows[0].get("height") or 0)
+        title = info.get("title") or ""
+        poster = info.get("image") or ""
     except Exception as exc:
         kodi.fail(handle, "解析失败：%s" % exc)
         return
-    kodi.play(handle, stream, title=title, thumb=poster)
+
+    player = None
+    if kodi.setting_bool(addon, "h5e_play", True):
+        try:
+            player = _start_decrypted(info, kodi)
+        except Exception as exc:
+            kodi.log("加密播放没起来，走明文：%r" % exc, xbmc.LOGWARNING)
+            player = None
+        # 解密档要是反而更低，就没必要折腾，直接走明文
+        if player is not None and player.height and player.height <= clear_height:
+            kodi.log("加密档 %s 不高于明文 %sp，走明文" % (player.resolution, clear_height))
+            player.stop()
+            player = None
+
+    kodi.play(handle, player.url if player else stream, title=title, thumb=poster)
+    if player:
+        _hold_playback(player, kodi)
 
 
-def _live_play(handle, kodi, cctv, params):
+def _live_play(handle, addon, kodi, cctv, params):
     channel = params.get("ch") or ""
     name = dict(cctv.LIVE_CHANNELS).get(channel, channel)
     stream = cctv.live_url(channel)
     if not stream:
         kodi.fail(handle, "%s 暂时没有可用线路（该频道可能只对部分地区开放）" % name)
         return
-    kodi.play(handle, stream, title=name, is_live=True)
+
+    player = None
+    if kodi.setting_bool(addon, "h5e_play", True) and cctv.is_drm_channel(channel):
+        try:
+            from resources.lib import h5eplay
+
+            # 地址可能带 Kodi 的 "|头" 后缀，代理只认裸地址
+            player = h5eplay.LivePlayback(stream.split("|")[0])
+            player.start()
+            kodi.log("直播解密已就绪：%s %s" % (name, player.url))
+        except Exception as exc:
+            kodi.log("直播解密没起来，直接连源：%r" % exc, xbmc.LOGWARNING)
+            if player is not None:
+                try:
+                    player.stop()
+                except Exception:
+                    pass
+            player = None
+
+    kodi.play(handle, player.url if player else stream, title=name, is_live=True)
+    if player:
+        _hold_playback(player, kodi, grace=30.0)
 
 
 # ---------------------------------------------------------------- 下载

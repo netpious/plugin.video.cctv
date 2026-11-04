@@ -48,6 +48,34 @@ LIVE_HOSTS = (
     "http://ldncctvwbndhwy.cntv.myhwcdn.cn/ldncctvwbnd/ld%s_2/index.m3u8",
 )
 
+LIVE_URLS = {
+    "cctv1": "https://ldncctvwbcdbd.a.bdydns.com/ldncctvwbcd/cdrmldcctv1_1/index.m3u8?b=200-2100",
+    "cctv2": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv2_1/index.m3u8?b=200-2100",
+    "cctv3": "https://ldocctvwbcdbd.a.bdydns.com/ldocctvwbcd/cdrmldcctv3_1/index.m3u8?b=200-1200",
+    "cctv4": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv4_1/index.m3u8?b=200-2100",
+    "cctv5": "https://ldcctvwbcdtxy.liveplay.myqcloud.com/ldcctvwbcd/cdrmldcctv5_1/index.m3u8?b=200-2100",
+    "cctv5plus": "https://ldcctvwbcdtxy.liveplay.myqcloud.com/ldcctvwbcd/cdrmldcctv5plus_1/index.m3u8?b=200-2100",
+    "cctv6": "https://ldocctvwbcdbd.a.bdydns.com/ldocctvwbcd/cdrmldcctv6_1/index.m3u8?b=200-1200",
+    "cctv7": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv7_1/index.m3u8?b=200-2100",
+    "cctv8": "https://ldocctvwbcdbd.a.bdydns.com/ldocctvwbcd/cdrmldcctv8_1/index.m3u8?b=200-1200",
+    "cctv9": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv9_1/index.m3u8?b=200-2100",
+    "cctv10": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv10_1/index.m3u8?b=200-2100",
+    "cctv11": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv11_1/index.m3u8?b=200-2100",
+    "cctv12": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv12_1/index.m3u8?b=200-2100",
+    "cctv13": "https://ldncctvwbcdbd.a.bdydns.com/ldncctvwbcd/cdrmldcctv13_1/index.m3u8?b=200-2100",
+    "cctv14": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv14_1/index.m3u8?b=200-2100",
+    "cctv15": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv15_1/index.m3u8?b=200-2100",
+    "cctv16": "https://ldcctvwbcdtxy.liveplay.myqcloud.com/ldcctvwbcd/cdrmldcctv16_1/index.m3u8?b=200-2100",
+    "cctv17": "https://ldocctvwbcdtxy.liveplay.myqcloud.com/ldocctvwbcd/cdrmldcctv17_1/index.m3u8?b=200-2100",
+    "ipanda": "https://hdgcwbcdcnc.v.wscdns.com/hdgcwbcd/cdrmipanda_1/index.m3u8",
+}
+
+# 这些频道的直播流是 cdrm 加密的（逐 NAL 网格），需要本地解密才能看；
+# 熊猫频道是明文，不在此列。
+DRM_CHANNELS = frozenset(
+    ["cctv%d" % i for i in range(1, 18)] + ["cctv5plus"]
+)
+
 LIVE_CHANNELS = (
     ("cctv1", "CCTV-1 综合"),
     ("cctv2", "CCTV-2 财经"),
@@ -58,17 +86,16 @@ LIVE_CHANNELS = (
     ("cctv6", "CCTV-6 电影"),
     ("cctv7", "CCTV-7 国防军事"),
     ("cctv8", "CCTV-8 电视剧"),
-    ("cctvjilu", "CCTV-9 纪录"),
+    ("cctv9", "CCTV-9 纪录"),
     ("cctv10", "CCTV-10 科教"),
     ("cctv11", "CCTV-11 戏曲"),
     ("cctv12", "CCTV-12 社会与法"),
     ("cctv13", "CCTV-13 新闻"),
-    ("cctvchild", "CCTV-14 少儿"),
+    ("cctv14", "CCTV-14 少儿"),
     ("cctv15", "CCTV-15 音乐"),
     ("cctv16", "CCTV-16 奥林匹克"),
     ("cctv17", "CCTV-17 农业农村"),
-    ("cctveurope", "CCTV 欧洲"),
-    ("cctvamerica", "CCTV 美洲"),
+    ("ipanda", "熊猫频道"),
 )
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -319,7 +346,11 @@ def page_guid(page_url):
 def _resolve_pid(guid, referer=None):
     """guid -> (stream, title, poster)。视频库/剧集接口直接给 guid，可以少抓一次页面。"""
     info = video_info(guid, referer=referer)
+    return resolve_info(info)
 
+
+def resolve_info(info):
+    """已经拿到点播接口 JSON 时，直接取可播的明文最高档。"""
     rows = clear_ladders(info)
     if not rows:
         raise ValueError("没有找到能正常播放的清晰度")
@@ -377,22 +408,33 @@ def _probe_hosts(channel, hosts, use_referer, timeout=4.0):
     return ""
 
 
-def live_url(channel, budget=8.0):
-    """返回可直接交给 Kodi 的直播地址。
+def is_drm_channel(channel):
+    """这个直播频道是不是加密的（cdrm）。
 
-    顺序：时移线路(裸) → 传统线路(裸) → 时移线路(带 Referer) → 传统线路(带 Referer)。
-    先找「完全不需要请求头」的，因为那种地址 Kodi 裸着拿就能播，不依赖它是否会把
-    "|头" 传给播放器；实在没有才用 Referer 后缀（腾讯云那条不带 Referer 必 403）。
-    整轮探测有总预算，避免某个死频道让人干等。
+    实测：CCTV-1~17 与 5+ 的直播流都是 cdrm（逐个 NAL 的二维网格，
+    经典布局，参数从流里取），而熊猫频道是明文，直接播即可。
     """
+    return (channel or "") in DRM_CHANNELS
+
+
+def live_url(channel, budget=8.0):
+    """直播地址。
+
+    2.1 起直接用实测过的地址表：19 个频道（CCTV-1~17、5+、熊猫）逐个验证过
+    master → 子清单 → .ts 分片，都是明文 TS、不需要任何请求头，Kodi 裸着就能播。
+    表里没有的频道才退回老的线路探测。
+    """
+    fixed = LIVE_URLS.get(channel)
+    if fixed:
+        return fixed
+
     deadline = time.monotonic() + budget
-    plans = (
+    for hosts, use_referer in (
         (LIVE_HOSTS_HD, False),
         (LIVE_HOSTS, False),
         (LIVE_HOSTS_HD, True),
         (LIVE_HOSTS, True),
-    )
-    for hosts, use_referer in plans:
+    ):
         left = deadline - time.monotonic()
         if left <= 0.5:
             break
