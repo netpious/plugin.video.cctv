@@ -16,6 +16,9 @@ UA = (
 # 会抛 SSLError(UNSAFE_LEGACY_RENEGOTIATION_DISABLED)。0x4 就是
 # OP_LEGACY_SERVER_CONNECT（3.12 之前没有这个常量名，所以直接写数值）。
 _SSL_CONTEXT = None
+_INSECURE_CONTEXT = None
+# 已经确认证书有问题的主机（只对显式允许兜底的调用生效）
+_BAD_CERT_HOSTS = set()
 
 
 def _ssl_context():
@@ -28,6 +31,27 @@ def _ssl_context():
             pass
         _SSL_CONTEXT = ctx
     return _SSL_CONTEXT
+
+
+def _insecure_context():
+    """兜底用：只在站方证书过期这类「不是我们能修」的情况下退到不校验。"""
+    global _INSECURE_CONTEXT
+    if _INSECURE_CONTEXT is None:
+        ctx = ssl._create_unverified_context()
+        try:
+            ctx.options |= 0x4
+        except Exception:
+            pass
+        _INSECURE_CONTEXT = ctx
+    return _INSECURE_CONTEXT
+
+
+def _is_cert_error(exc):
+    """urllib 把证书错误包成 URLError，真正的原因在 .reason 里。"""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return True
+    return "CERTIFICATE_VERIFY_FAILED" in str(reason)
 
 DEFAULT_HEADERS = {
     "User-Agent": UA,
@@ -44,8 +68,28 @@ class HttpError(Exception):
         super().__init__("HTTP %s: %s" % (status, url))
 
 
-def fetch(url, timeout=15, referer=None, headers=None, ua=None):
-    """返回 (status, content_type, bytes)。非 2xx 抛 HttpError。"""
+def fetch(url, timeout=15, referer=None, headers=None, ua=None, allow_insecure_fallback=False):
+    """返回 (status, content_type, bytes)。非 2xx 抛 HttpError。
+
+    allow_insecure_fallback：证书校验失败时，用不校验证书的连接再试一次。
+    只给央视赛事接口（cbs-u.sports.cctv.com）这种「公开 JSON、站方证书过期」
+    的地址用 —— 2026-11-05 它的证书到期后，赛事菜单直接空了。
+    同一个主机一旦确认证书有问题就记住，后续请求直接走不校验，不再每次先失败一遍。
+    """
+    host = ""
+    try:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        pass
+
+    if allow_insecure_fallback and host in _BAD_CERT_HOSTS:
+        return _fetch(url, timeout, referer, headers, ua, False, _insecure_context())
+    return _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, _ssl_context())
+
+
+def _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, context):
     hdrs = dict(DEFAULT_HEADERS)
     if ua:
         hdrs["User-Agent"] = ua
@@ -56,12 +100,22 @@ def fetch(url, timeout=15, referer=None, headers=None, ua=None):
 
     req = urllib.request.Request(url, headers=hdrs)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw = resp.read()
             status = resp.status
             ctype = resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
         raise HttpError(exc.code, url)
+    except urllib.error.URLError as exc:
+        if allow_insecure_fallback and _is_cert_error(exc):
+            try:
+                from urllib.parse import urlsplit
+
+                _BAD_CERT_HOSTS.add(urlsplit(url).hostname or "")
+            except Exception:
+                pass
+            return _fetch(url, timeout, referer, headers, ua, False, _insecure_context())
+        raise
 
     if raw[:2] == b"\x1f\x8b":
         try:
@@ -84,8 +138,9 @@ def decode(raw, ctype=""):
         return raw.decode("gb18030", "replace")
 
 
-def get_text(url, timeout=15, referer=None, headers=None, ua=None):
-    status, ctype, raw = fetch(url, timeout=timeout, referer=referer, headers=headers, ua=ua)
+def get_text(url, timeout=15, referer=None, headers=None, ua=None, allow_insecure_fallback=False):
+    status, ctype, raw = fetch(url, timeout=timeout, referer=referer, headers=headers,
+                               ua=ua, allow_insecure_fallback=allow_insecure_fallback)
     return status, decode(raw, ctype)
 
 

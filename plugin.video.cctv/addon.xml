@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.cctv"
        name="央视网"
-       version="2.1.3"
+       version="2.1.4"
        provider-name="netpious, dsh">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,6 @@
     <disclaimer lang="en_GB">Third-party client, not affiliated with CCTV; it only reads publicly available pages.</disclaimer>
     <assets>
       <icon>icon.png</icon>
-      <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
 </addon>

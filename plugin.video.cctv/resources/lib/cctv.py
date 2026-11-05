@@ -445,22 +445,86 @@ def live_url(channel, budget=8.0):
 
 
 # ---------------------------------------------------------------- 搜索
-def search(keyword, page=1, page_size=20, kind="video"):
-    """央视搜索的移动版 JSON 接口。
+# 2.1.4：视频搜索改用网页端（search.cctv.com）自己的接口 ifsearch.php。
+# 以前用的是移动版 m/if3g_search.php —— 同一个关键词，两边结果不一样：
+# 搜「熊出没」网页端第一条是「电影《熊出没 年年有熊》」，移动版却把最近几天的
+# 《动画大放映》排在最前（而且这 20 条全是同一个 ALBUMID，被下面的归并逻辑
+# 压成一条「动画大放映（剧集）」），于是插件里几乎什么都看不到。
+SEARCH_PAGE_API = "https://search.cctv.com/ifsearch.php"
+SEARCH_PAGE_URL = "https://search.cctv.com/search.php?qtext=%s&type=video"
 
-    桌面版 video.php 被 WAF 拦（403），但移动版 m/if3g_search.php 正常返回 JSON，
+# 每个 `<a>` 的标题里都带 <font color="red">关键词</font>，清理时统一去掉
+_VSET_ITEM_RE = re.compile(
+    r'<a href="([^"]+)"[^>]*class="image"[^>]*title="([^"]*)"', re.S
+)
+_VSET_RECOMMEND_RE = re.compile(
+    r'<a href="([^"]+)"[^>]*id="video_playlist_cont_(\d+)">(.*?)</a>', re.S
+)
+_VSET_ALBUM_RE = re.compile(r"(VID[A-Za-z][0-9A-Za-z]+)")
+
+
+def _search_pc(keyword, page, page_size, timeout=25):
+    """网页端视频搜索接口，返回和浏览器「全部视频结果」一致的列表。"""
+    from urllib.parse import quote, urlencode
+
+    params = {
+        "page": page,
+        "qtext": keyword,
+        "sort": "relevance",
+        "pageSize": page_size,
+        "type": "video",
+        "vtime": "-1",
+        "datepid": "1",
+        "channel": "不限",
+        "pageflag": 0,
+        "qtext_str": keyword,
+    }
+    url = SEARCH_PAGE_API + "?" + urlencode(params)
+    _, text = net.get_text(
+        url, timeout=timeout,
+        referer=SEARCH_PAGE_URL % quote(keyword),
+        headers={"Accept": "application/json, text/plain, */*"},
+    )
+
+    data = json.loads(text)
+    total = int(data.get("total") or 0)
+
+    items = []
+    for row in data.get("list") or []:
+        link = _s(row.get("urllink")).strip()
+        if not link:
+            continue
+        title = clean_text(_s(row.get("all_title") or row.get("title")))
+        if len(title) < 2:
+            continue
+        channel = _s(row.get("channel")).strip()
+        published = _s(row.get("uploadtime"))[:10] or date_of(link)
+        items.append(
+            {
+                "title": title,
+                "url": link,
+                "thumb": _s(row.get("imglink")).strip(),
+                "plot": " · ".join(t for t in (channel, published) if t),
+                "date": published,
+                "duration": _s(row.get("durations")).strip(),
+                "playable": bool(_PLAYABLE_RE.search(link)),
+                "album": "",
+                "guid": "",
+            }
+        )
+    return items, total
+
+
+def _search_mobile(keyword, page, page_size, kind):
+    """移动版接口：音频搜索（以及 article 等其它页签）走这里。
+
     字段：DRETITLE / PAGELINK / IMAGELINK / DRECONTENT / PUBTIME / DURATION。
-
-    kind 就是网页搜索的三个页签：article（网页/文章）、video（视频）、audio（音频）。
-    本插件只用 video 和 audio —— 文章的搜索还没做。
-
-    2.1.3：sort 必须是 relevance。网页端（search.cctv.com）发的就是 relevance，
-    而这里以前留空，个别关键词会被后端当成「没有结果」——例如搜「新闻」直接回
-    total=0，同一个词在网页端有 600 多万条。这就是「搜索抓的不全」的根因。
+    sort 必须是 relevance，网页端发的就是它；留空时个别关键词（例如「新闻」）
+    会被后端当成「没有结果」。
     """
     from urllib.parse import quote
 
-    url = SEARCH_API % (page, quote(keyword), kind or "video", page_size)
+    url = SEARCH_API % (page, quote(keyword), kind or "audio", page_size)
     _, text = net.get_text(url, timeout=20, referer="https://search.cctv.com/m/", ua=MOBILE_UA)
 
     data = json.loads(text)
@@ -491,3 +555,60 @@ def search(keyword, page=1, page_size=20, kind="video"):
             }
         )
     return items, total
+
+
+def search(keyword, page=1, page_size=20, kind="video", timeout=25):
+    """央视搜索。视频走网页端接口，音频走移动版接口。
+
+    kind 是网页搜索的页签：article（网页/文章）、video（视频）、audio（音频）。
+    本插件只用 video 和 audio —— 文章的搜索还没做。timeout 给兜底搜索缩短用。
+    """
+    if (kind or "video") == "video":
+        return _search_pc(keyword, page, page_size, timeout=timeout)
+    return _search_mobile(keyword, page, page_size, kind)
+
+
+def search_videosets(keyword):
+    """网页搜索顶部那两块「推荐 / 其他相关视频集结果」，也就是一叠剧集入口。
+
+    这一段是 search.php 服务端直接渲染的 HTML（没有对应的 JSON 接口），
+    所以只能取整页来解析；条目形如：
+        <a href="http://tv.cctv.com/2015/05/29/VIDA1432879954445219.shtml"
+           ... class="image" title="熊出没之雪岭熊风">
+    返回 [{"title", "album", "url"}]，album 就是 VIDA… 那一串。
+    """
+    from urllib.parse import quote
+
+    try:
+        _status, page = net.get_text(
+            SEARCH_PAGE_URL % quote(keyword), timeout=25,
+            referer="https://search.cctv.com/",
+        )
+    except Exception:
+        return []
+
+    out, seen = [], set()
+
+    def push(link, title):
+        album = _VSET_ALBUM_RE.search(link or "")
+        name = clean_text(title)
+        if not album or len(name) < 2:
+            return
+        key = album.group(1)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"title": name, "album": key, "url": link})
+
+    # 1) 页面顶部推荐的两个视频集（id="video_playlist_cont_1/2"）
+    for match in _VSET_RECOMMEND_RE.finditer(page):
+        push(match.group(1), match.group(3))
+
+    # 2) 「其他相关视频集结果」那一段
+    start = page.find("其他相关视频集结果")
+    end = page.find("全部视频结果")
+    segment = page[start:end] if start >= 0 and end > start else page
+    for match in _VSET_ITEM_RE.finditer(segment):
+        push(match.group(1), match.group(2))
+
+    return out

@@ -745,17 +745,16 @@ def _sports(handle, base, kodi, portal, params):
     grp = params.get("grp") or ""
 
     if not grp:
-        kodi.add_folder(handle, base, "频道（%d 个）" % len(portal.SPORTS_CHANNELS), "sports",
+        kodi.add_folder(handle, base, "频道", "sports",
                         grp="ch",
-                        plot="央视体育的 19 个频道：奥林匹克频道、NBA、CBA、中超、"
+                        plot="央视体育的频道：奥林匹克频道、NBA、CBA、中超、"
                              "英超、德甲、法甲、意甲、羽毛球、乒乓球、网球、排球…")
-        kodi.add_folder(handle, base, "央视名栏（%d 个）" % len(portal.SPORTS_PROGRAMS), "sports",
+        kodi.add_folder(handle, base, "央视名栏", "sports",
                         grp="prog",
                         plot="央视体育的名牌栏目：体育新闻、体育世界、天下足球、"
                              "足球之夜、篮球公园…")
         kodi.add_folder(handle, base, "赛事", "matches",
-                        plot="央视体育的赛程与比赛视频：近期集锦、今日赛程、"
-                             "按日期、按联赛（NBA、CBA、英超、中超…）")
+                        plot="央视体育的赛程与比赛视频：NBA、CBA、英超、中超…")
         kodi.end_directory(handle)
         return
 
@@ -856,61 +855,33 @@ def _date_label(row):
 
 
 def _matches(handle, base, kodi, portal, params):
-    """赛事菜单：近期集锦 / 今日赛程 / 按日期 / 按联赛。"""
-    grp = params.get("grp") or ""
+    """赛事菜单：2.1.4 起直接把各个赛事（联赛）铺开。
 
-    if not grp:
-        try:
-            today, dates = portal.sports_dates()
-        except Exception as exc:
-            kodi.log("matches dates failed: %r" % exc, xbmc.LOGERROR)
-            kodi.notify("赛程接口暂时打不开：%s" % exc, error=True)
-            kodi.add_folder(handle, base, "点这里重试", "matches")
-            kodi.end_directory(handle)
-            return
-        kodi.add_folder(handle, base, "近期集锦", "highlights",
-                        plot="把最近 %d 天所有比赛的集锦与回顾合成一个视频列表"
-                             % portal.CBS_HIGHLIGHT_DAYS)
-        kodi.add_folder(handle, base, "今日赛程（%s）" % today, "matchlist", d=today,
-                        plot="今天所有比赛，点进去看集锦与比分")
-        kodi.add_folder(handle, base, "按日期（%d 天）" % len(dates), "matches", grp="dates",
-                        plot="日期轴共 %d 天：%s ~ %s（接口只给这个滚动窗口，没有历史赛季）"
-                             % (len(dates), dates[0], dates[-1]))
-        kodi.add_folder(handle, base, "按联赛", "matches", grp="leagues",
-                        plot="NBA、CBA、英超、中超、意甲、德甲、法甲、西甲、解放者杯…")
-        kodi.end_directory(handle)
-        return
-
-    if grp == "dates":
-        try:
-            _today, rows = portal.sports_date_rows()
-        except Exception as exc:
-            kodi.notify("日期轴读取失败：%s" % exc, error=True)
-            kodi.add_folder(handle, base, "点这里重试", "matches", grp="dates")
-            kodi.end_directory(handle)
-            return
-        for row in rows:
-            kodi.add_folder(handle, base, _date_label(row), "matchlist", d=row["date"],
-                            plot="%s 的比赛" % row["date"])
-        kodi.end_directory(handle)
-        return
-
+    以前这里是「近期集锦 / 今日赛程 / 按日期 / 按联赛」四层壳，用户要的
+    是点进来就看到 NBA、CBA、英超… 这几个赛事本身。
+    """
     try:
         leagues = portal.sports_leagues()
     except Exception as exc:
-        kodi.notify("联赛列表读取失败：%s" % exc, error=True)
-        kodi.add_folder(handle, base, "点这里重试", "matches", grp="leagues")
+        kodi.log("matches leagues failed: %r" % exc, xbmc.LOGERROR)
+        kodi.notify("赛程接口暂时打不开：%s" % exc, error=True)
+        kodi.add_folder(handle, base, "点这里重试", "matches")
         kodi.end_directory(handle)
         return
+
+    if not leagues:
+        kodi.notify("没有取到赛事列表", error=True)
+        kodi.end_directory(handle, succeeded=False)
+        return
+
+    kodi.log("赛事：%d 个联赛" % len(leagues))
     for row in leagues:
         label = row["name"]
         if row.get("kind"):
             label = "%s（%s）" % (label, row["kind"])
         kodi.add_folder(handle, base, label, "matchlist", l=row["id"],
                         thumb=row.get("logo") or None,
-                        plot="%s 近三周的赛程与集锦" % row["name"])
-    if not leagues:
-        kodi.notify("没有取到联赛列表", error=True)
+                        plot="%s · 近三周的赛程；点进去看单场比赛的赛事与集锦" % row["name"])
     kodi.end_directory(handle)
 
 
@@ -983,21 +954,36 @@ def _match(handle, base, kodi, portal, params):
     digest = portal.match_stats_digest(game, stats)
 
     if not items:
-        # 没有集锦就别再摆一个空目录：直接把技术统计当文本显示出来
-        kodi.log("match %s: 没有视频，直接显示技术统计" % game_id)
-        heading = ("%s %s" % (game.get("leagueName") or "赛事",
-                              game.get("gameName") or "")).strip()
-        kodi.text_viewer(heading or "技术统计", report)
-        kodi.notify("这场比赛的集锦还没上线，先看技术统计")
-        kodi.end_directory(handle, succeeded=False)
+        # 央视还没把这场比赛的视频挂到赛程上：别留空目录，
+        # 至少给「技术统计」和「按队名搜索」两个能点开的入口。
+        kodi.log("match %s: 没有视频，给技术统计 + 搜索入口" % game_id)
+        label = "技术统计｜%s" % digest if digest else "技术统计"
+        kodi.add_folder(handle, base, label, "matchinfo", id=game_id, plot=report)
+        query = ("%s %s" % (game.get("homeName") or "",
+                            game.get("guestName") or "")).strip()
+        if query:
+            kodi.add_folder(handle, base, "搜索这场比赛的相关视频", "search", q=query,
+                            plot="央视还没把这场比赛的视频挂到赛程上，"
+                                 "可以按「%s」去视频库搜一下" % query)
+        kodi.notify("这场比赛的视频还没上线，先看技术统计或搜索相关视频")
+        kodi.end_directory(handle)
         return
 
     label = "技术统计｜%s" % digest if digest else "技术统计"
     kodi.add_folder(handle, base, label, "matchinfo", id=game_id, plot=report)
 
+    full = [it for it in items if it.get("full")]
+    clips = [it for it in items if not it.get("full")]
+    kodi.log("match %s: 赛事 %d 条，集锦 %d 条" % (game_id, len(full), len(clips)))
+
     for it in items:
-        title = _short_title(it["title"])
+        is_full = bool(it.get("full"))
+        short = _short_title(it["title"])
+        # 「赛事」单独标出来，免得跟集锦混在一起看不出来
+        title = "赛事｜%s" % short if is_full else short
         plot = it["title"]
+        if is_full:
+            plot = "全场录像\n\n" + plot
         if it.get("note"):
             plot += "\n（%s）" % it["note"]
         plot += "\n\n" + report
@@ -1014,6 +1000,15 @@ def _match(handle, base, kodi, portal, params):
                 g=guid, u=quote(page, safe="") if page else "", t=it["title"],
             ),
         )
+
+    # 没有全场时再给一个「按队名搜索」的入口：赛程没挂上的视频，
+    # 视频库里有时已经发了（例如 11-03 辽宁打广州的全场）。
+    if not full:
+        query = ("%s %s" % (game.get("homeName") or "",
+                            game.get("guestName") or "")).strip()
+        if query:
+            kodi.add_folder(handle, base, "搜索这场比赛的相关视频", "search", q=query,
+                            plot="赛程里没挂到这场比赛的视频，可以按「%s」去视频库再搜一次" % query)
 
     kodi.end_directory(handle)
 

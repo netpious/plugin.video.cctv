@@ -55,7 +55,7 @@ ALBUM_PAGE_SIZE = 20
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _VIDE_ID_RE = re.compile(r"VIDE[A-Za-z0-9]+\.s?html?")
-_ALBUM_ID_RE = re.compile(r"VIDA[0-9]+")
+_ALBUM_ID_RE = re.compile(r"VIDA[0-9A-Za-z]+")
 _P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.S | re.I)
 _SCRIPT_RE = re.compile(r"<(script|style|noscript)\b[^>]*>.*?</\1>", re.S | re.I)
 _H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
@@ -771,6 +771,8 @@ def _cbs(path, params=None, timeout=25):
     _status, ctype, raw = net.fetch(
         url, timeout=timeout, referer=CBS_REFERER,
         headers={"Accept": "application/json, text/plain, */*"},
+        # 2026-11-05 站方证书到期，校验失败时退到不校验（只读公开 JSON）
+        allow_insecure_fallback=True,
     )
     text = net.decode(raw, ctype)
     data = json.loads(text)
@@ -862,7 +864,7 @@ def game_plot(game):
             lines.append("分节：" + " / ".join("%s %s-%s" % (name, a, b)
                                                for _n, name, a, b in rows))
     if game.get("hasVideo"):
-        lines.append("本场有集锦视频（片源最高 640x360）")
+        lines.append("本场有全场/集锦视频（片源最高 640x360）")
     return "\n".join(lines)
 
 
@@ -883,6 +885,35 @@ def game_videos(game):
             "copyright": row.get("copyright"),
         })
     return items
+
+
+# ---------------------------------------------------------------- 赛事：全场 vs 集锦
+# 2.1.4：一场比赛里除了集锦，还有「赛事」（全场录像/回放）。央视的命名很规整：
+#     赛事：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源      （约 100 分钟）
+#     集锦：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源 集锦 （约 2~5 分钟）
+#          [NBA]常规赛10月27日：老鹰VS火箭 比赛回顾        （约 2 分钟，也算集锦）
+# 所以「标题带 VS、且没有 集锦/回顾」就是全场。
+_FULL_MATCH_RE = re.compile(r"(?:VS|vs|Vs)")
+
+
+def is_full_match(title):
+    """只有「A VS B」这种对阵标题才算全场；「引燃全场」这类词不算。"""
+    text = (title or "").strip()
+    if not text:
+        return False
+    if "集锦" in text or "回顾" in text:
+        return False
+    return bool(_FULL_MATCH_RE.search(text))
+
+
+def split_match_videos(items):
+    """拆成（赛事/全场, 集锦），并给每条打上 full 标记。"""
+    full, clips = [], []
+    for item in items:
+        row = dict(item)
+        row["full"] = is_full_match(row.get("title"))
+        (full if row["full"] else clips).append(row)
+    return full, clips
 
 
 def sports_date_rows():
@@ -913,9 +944,12 @@ def sports_leagues():
 
     实测坑：热门联赛列表里有「世界杯」「欧冠」这种当前一场没有的，
     而「解放者杯」「西甲」有比赛却不在热门列表里 —— 两个来源都得要。
+
+    2.1.4：赛事菜单直接展平到联赛，所以把近三周一场比赛都没有的联赛滤掉
+    （世界杯、欧冠现在就是空的），免得点进去只有一个「没有赛程」。
+    如果整段时间都没有比赛（休赛期），就退回热门列表，至少不留白屏。
     """
-    rows = []
-    seen = set()
+    hot_rows = []
     try:
         hot = _cbs("/league/hot_list").get("results") or []
     except Exception:
@@ -925,14 +959,14 @@ def sports_leagues():
         league_id = str(row.get("id") or "").strip()
         if not name or not league_id:
             continue
-        seen.add(league_id)
-        rows.append({
+        hot_rows.append({
             "id": league_id,
             "name": name,
             "kind": CBS_KIND.get(row.get("extType"), ""),
             "logo": (row.get("logoPath") or "").strip(),
         })
 
+    window_rows = {}
     try:
         _today, dates = sports_dates()
         data = _cbs("/game/date_game_list", {"startTime": dates[0], "endTime": dates[-1]})
@@ -942,15 +976,24 @@ def sports_leagues():
         for game in day.get("list") or []:
             league_id = str(game.get("leagueId") or "").strip()
             name = (game.get("leagueName") or "").strip()
-            if not name or not league_id or league_id in seen:
+            if not name or not league_id or league_id in window_rows:
                 continue
-            seen.add(league_id)
-            rows.append({
+            window_rows[league_id] = {
                 "id": league_id,
                 "name": name,
                 "kind": CBS_KIND.get(game.get("extType"), ""),
                 "logo": (game.get("leagueLogo") or "").strip(),
-            })
+            }
+
+    if not window_rows:
+        return hot_rows
+
+    rows = [row for row in hot_rows if row["id"] in window_rows]
+    seen = set(row["id"] for row in rows)
+    for league_id, row in window_rows.items():
+        if league_id not in seen:
+            rows.append(row)
+            seen.add(league_id)
     return rows
 
 
@@ -1019,7 +1062,7 @@ def sports_game(game_id):
 # 「数据 / 分析」两个标签页是 H5 页面（cbs-h5.sports.cctv.com），它们直接打
 # cbs-u 的根路径（注意没有 /pc/ 前缀）：statistics/{football|basketball}/game/…
 STATS_BASE = "https://cbs-u.sports.cctv.com/"
-STATS_TIMEOUT = 15
+STATS_TIMEOUT = 6
 
 # 字段名来自 pc_game_data.js / pc_game_analysis.js 里的表格列定义
 FOOTBALL_STATS = (
@@ -1053,6 +1096,7 @@ def _stats_json(path, game_id):
     _status, ctype, raw = net.fetch(
         url, timeout=STATS_TIMEOUT, referer=CBS_REFERER,
         headers={"Accept": "application/json, text/plain, */*"},
+        allow_insecure_fallback=True,
     )
     data = json.loads(net.decode(raw, ctype))
     if isinstance(data, dict) and data.get("success") is False:
@@ -1061,7 +1105,13 @@ def _stats_json(path, game_id):
 
 
 def match_stats(game):
-    """一场比赛的技术统计。取不到就返回 ok=False，不抛异常。"""
+    """一场比赛的技术统计。取不到就返回 ok=False，不抛异常。
+
+    2.1.4：两个接口并行拉，各自 6 秒超时。以前是串行 + 15 秒 ——
+    cbs 接口一抽风，点开一场比赛能干等半分钟。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     game_id = str(game.get("id") or "")
     football = game.get("extType") == 1
     out = {
@@ -1072,23 +1122,35 @@ def match_stats(game):
     }
     if not game_id:
         return out
+
     sport = "football" if football else "basketball"
-    try:
-        data = _stats_json("statistics/%s/game/team_stats" % sport, game_id)
-        rows = data.get("results") or []
-        if rows:
-            out["rows"] = rows[:2]
-            out["ok"] = True
-    except Exception:
-        pass
+    paths = ["statistics/%s/game/team_stats" % sport]
     if not football:
+        paths.append("statistics/basketball/game/quarter_score")
+
+    def load(path):
         try:
-            data = _stats_json("statistics/basketball/game/quarter_score", game_id)
-            quarters = data.get("results") or []
-            if quarters:
-                out["quarters"] = quarters[:2]
+            return _stats_json(path, game_id)
         except Exception:
-            pass
+            return {}
+
+    data = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {path: pool.submit(load, path) for path in paths}
+        for path, future in futures.items():
+            try:
+                data[path] = future.result()
+            except Exception:
+                data[path] = {}
+
+    rows = (data.get(paths[0]) or {}).get("results") or []
+    if rows:
+        out["rows"] = rows[:2]
+        out["ok"] = True
+    if not football and len(paths) > 1:
+        quarters = (data.get(paths[1]) or {}).get("results") or []
+        if quarters:
+            out["quarters"] = quarters[:2]
     return out
 
 
@@ -1227,7 +1289,8 @@ def match_video_fallback(game, limit=12, days=2):
         return []
 
     try:
-        rows, _total = _cctv.search("%s %s" % (home, guest), 1, 30)
+        rows, _total = _cctv.search("%s %s" % (home, guest), 1, 30, kind="video",
+                                    timeout=8)
     except Exception:
         return []
 
@@ -1265,12 +1328,123 @@ def match_video_fallback(game, limit=12, days=2):
     return out
 
 
+def _video_seconds(row):
+    try:
+        return int(float(row.get("duration") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def match_extra_videos(game, existing=None, days=1, limit=8):
+    """videoList 没挂视频时的宽松兜底：先按「主队VS客队」，再按「联赛 + 月日」搜。
+
+    央视体育的赛程接口只给一部分场次挂视频（很多比赛 hasVideo=0、videoList=[]），
+    但同一场的视频其实可能已经发了，只是标题里不一定同时出现两队全名 ——
+    例如 2026-11-03 辽宁对广州，赛程没挂视频，视频中心有一条
+    「[CBA]跌宕起伏 辽宁本钢取得三连胜」。
+
+    命中条件（宁可少补，不可错补）：
+      * 两队名都在标题里：前后一天都算（电视端有时跨零点上传）；
+      * 只提一支队：必须是比赛当天，并带上联赛名（[CBA]/[NBA]…），
+        否则很容易串到同队另一场（实测 11-03 北京打宁波，会搜到
+        11-02 天津打宁波的「天津先行者主场战胜宁波町渥」）；
+      * 不是已经列在 videoList 里的那几条（按地址、标题去重）。
+    """
+    from . import cctv as _cctv
+
+    home = (game.get("homeName") or "").strip()
+    guest = (game.get("guestName") or "").strip()
+    league = (game.get("leagueName") or "").strip()
+    game_date = (game.get("startTime") or "")[:10]
+    if not (home and guest and game_date):
+        return []
+    try:
+        base = time.mktime(time.strptime(game_date, "%Y-%m-%d"))
+    except (ValueError, OverflowError):
+        return []
+
+    seen_url, seen_title = set(), set()
+    for item in existing or []:
+        url = (item.get("url") or "").split("?")[0]
+        if url:
+            seen_url.add(url)
+        seen_title.add((item.get("title") or "").strip())
+
+    out = []
+
+    def take(rows):
+        for row in rows:
+            if len(out) >= limit:
+                return
+            title = (row.get("title") or "").strip()
+            url = (row.get("url") or "").strip()
+            if not title or not url or not row.get("playable", True):
+                continue
+            both = home in title and guest in title
+            if not both and home not in title and guest not in title:
+                continue
+            if not both and league and ("[%s]" % league) not in title:
+                continue
+            if title in seen_title or url.split("?")[0] in seen_url:
+                continue
+            published = (row.get("date") or "")[:10]
+            if not published:
+                continue
+            if both:
+                try:
+                    published_ts = time.mktime(time.strptime(published, "%Y-%m-%d"))
+                except (ValueError, OverflowError):
+                    continue
+                if abs(published_ts - base) > days * 86400:
+                    continue
+            elif published != game_date:
+                continue
+            if not _SPORTS_PAGE_RE.search(url):
+                continue
+            out.append({
+                "kind": "matchvideo",
+                "guid": "",
+                "url": url,
+                "title": title,
+                "thumb": row.get("thumb") or "",
+                "plot": row.get("plot") or title,
+                "copyright": None,
+                "full": is_full_match(title),
+                "duration": row.get("duration") or "",
+                "note": "赛程未关联，按联赛+日期+队名搜索补全",
+            })
+            seen_title.add(title)
+            seen_url.add(url.split("?")[0])
+
+    # 1) 主队VS客队：命中率最高，先搜这个（兜底搜索最多等 8 秒）
+    try:
+        rows, _total = _cctv.search("%sVS%s" % (home, guest), 1, 30,
+                                    kind="video", timeout=8)
+        take(rows)
+    except Exception:
+        pass
+
+    # 2) 还没找到全场，再按「联赛 月日」宽搜
+    if not any(v["full"] for v in out) and league:
+        month, day = int(game_date[5:7]), int(game_date[8:10])
+        try:
+            rows, _total = _cctv.search("%s %d月%d日" % (league, month, day), 1, 30,
+                                        kind="video", timeout=8)
+            take(rows)
+        except Exception:
+            pass
+
+    # 全场排前面，同类型里长的在前
+    out.sort(key=lambda v: (0 if v["full"] else 1, -_video_seconds(v)))
+    return out
+
 
 def sports_game_items(game_id):
-    """一场比赛下面的列表：所有视频。返回 (items, game)。
+    """一场比赛下面的列表：赛事（全场）+ 集锦。返回 (items, game)。
 
-    赛程记录里没有 videoList 的场次（hasVideo=0）不代表央视网没发集锦，
-    这时用「主队 客队」去搜索兜底。
+    赛程记录里没有 videoList 的场次（hasVideo=0）不代表央视网没发视频，
+    这时用「主队 客队」和「联赛+日期」去搜索兜底；有 videoList 但只有集锦的，
+    也再搜一次全场。
     """
     game = sports_game(game_id)
     videos = game_videos(game)
@@ -1280,9 +1454,20 @@ def sports_game_items(game_id):
             for row in fallback:
                 row["note"] = "赛程未关联，来自搜索"
             videos = fallback
-    # 「比赛回顾」这种整场视频排在最前，其余按接口顺序
-    videos.sort(key=lambda v: 0 if "回顾" in v["title"] else 1)
-    return videos, game
+
+    full, clips = split_match_videos(videos)
+    if not full or not videos:
+        try:
+            extra = match_extra_videos(game, videos)
+        except Exception:
+            extra = []
+        if extra:
+            videos = extra + videos
+            full, clips = split_match_videos(videos)
+
+    # 赛事在前；集锦里「比赛回顾」这种接近全场的排最前
+    clips.sort(key=lambda v: 0 if "回顾" in v["title"] else 1)
+    return full + clips, game
 
 
 def sports_highlights(days=CBS_HIGHLIGHT_DAYS, progress=None):
@@ -1338,37 +1523,33 @@ def sports_highlights(days=CBS_HIGHLIGHT_DAYS, progress=None):
     return out
 
 
-# ---------------------------------------------------------------- 搜索（带剧集归并）
+# ---------------------------------------------------------------- 搜索
+# 2.1.4：视频搜索照搬网页端的两段结构 ——
+#   ① 顶部「推荐 / 其他相关视频集结果」：一叠剧集入口（熊出没之雪岭熊风…）
+#   ② 「全部视频结果」：逐条视频，原样铺开
+# 以前只取了移动版的视频列表，还把同一个 ALBUMID 的 20 条压成一条
+# 「XX（剧集）」，所以搜「熊出没」几乎什么都看不到。
 def search_grouped(keyword, page=1, page_size=20):
-    """视频搜索，并把同一部剧集的多条结果合并成一个「剧集」条目。
-
-    央视搜索结果里同一部剧的每一集都带相同的 ALBUMID，浏览器里是一个剧集入口，
-    点进去才看分集；这里照做。
-    """
+    """视频搜索，返回 (items, total)。第 1 页先放视频集，再放视频。"""
     from . import cctv as _cctv
 
     items, total = _cctv.search(keyword, page, page_size, kind="video")
+
     out = []
-    seen_album = set()
-    for it in items:
-        album = it.get("album") or ""
-        if not album:
-            out.append(it)
-            continue
-        if album in seen_album:
-            continue
-        seen_album.add(album)
-        name = series_name(it["title"]) or it["title"]
-        out.append(
-            {
-                "kind": "album",
-                "title": "%s（剧集）" % name,
-                "album": album,
-                "thumb": it.get("thumb") or "",
-                "plot": "点击查看分集：%s" % it["title"],
-                "date": it.get("date") or "",
-            }
-        )
+    if page <= 1:
+        for vs in _cctv.search_videosets(keyword):
+            out.append(
+                {
+                    "kind": "album",
+                    "title": vs["title"],
+                    "album": vs["album"],
+                    "thumb": vs.get("thumb") or "",
+                    "plot": "视频集：%s（点开看分集）" % vs["title"],
+                    "date": "",
+                }
+            )
+
+    out.extend(items)
     return out, total
 
 
