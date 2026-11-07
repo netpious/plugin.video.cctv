@@ -1335,7 +1335,7 @@ def _video_seconds(row):
         return 0
 
 
-def match_extra_videos(game, existing=None, days=1, limit=8):
+def match_extra_videos(game, existing=None, days=3, limit=8):
     """videoList 没挂视频时的宽松兜底：先按「主队VS客队」，再按「联赛 + 月日」搜。
 
     央视体育的赛程接口只给一部分场次挂视频（很多比赛 hasVideo=0、videoList=[]），
@@ -1416,23 +1416,30 @@ def match_extra_videos(game, existing=None, days=1, limit=8):
             seen_title.add(title)
             seen_url.add(url.split("?")[0])
 
-    # 1) 主队VS客队：命中率最高，先搜这个（兜底搜索最多等 8 秒）
-    try:
-        rows, _total = _cctv.search("%sVS%s" % (home, guest), 1, 30,
-                                    kind="video", timeout=8)
-        take(rows)
-    except Exception:
-        pass
+    # 依次尝试：主队VS客队 → 联赛+轮次（央视的全场标题都是「[英超]第9轮：A VS B」）
+    # → 联赛+月日。命中一条全场就停。
+    round_name = ""
+    for cand in (game.get("gameRound"), game.get("customRound"), game.get("roundType")):
+        text = (cand or "").strip()
+        if "轮" in text:
+            round_name = text
+            break
+    queries = ["%sVS%s" % (home, guest)]
+    if league and round_name:
+        queries.append("%s %s" % (league, round_name))
 
-    # 2) 还没找到全场，再按「联赛 月日」宽搜
-    if not any(v["full"] for v in out) and league:
-        month, day = int(game_date[5:7]), int(game_date[8:10])
+    done_queries = set()
+    for query in queries:
+        if not query or query in done_queries:
+            continue
+        done_queries.add(query)
         try:
-            rows, _total = _cctv.search("%s %d月%d日" % (league, month, day), 1, 30,
-                                        kind="video", timeout=8)
-            take(rows)
+            rows, _total = _cctv.search(query, 1, 30, kind="video", timeout=6)
         except Exception:
-            pass
+            continue
+        take(rows)
+        if any(v["full"] for v in out):
+            break
 
     # 全场排前面，同类型里长的在前
     out.sort(key=lambda v: (0 if v["full"] else 1, -_video_seconds(v)))
@@ -1443,17 +1450,11 @@ def sports_game_items(game_id):
     """一场比赛下面的列表：赛事（全场）+ 集锦。返回 (items, game)。
 
     赛程记录里没有 videoList 的场次（hasVideo=0）不代表央视网没发视频，
-    这时用「主队 客队」和「联赛+日期」去搜索兜底；有 videoList 但只有集锦的，
-    也再搜一次全场。
+    这时用「主队VS客队」「联赛+轮次」去视频库搜索兜底（match_extra_videos 里做）；
+    有 videoList 但只有集锦的，也再搜一次全场。
     """
     game = sports_game(game_id)
     videos = game_videos(game)
-    if not videos:
-        fallback = match_video_fallback(game)
-        if fallback:
-            for row in fallback:
-                row["note"] = "赛程未关联，来自搜索"
-            videos = fallback
 
     full, clips = split_match_videos(videos)
     if not full or not videos:

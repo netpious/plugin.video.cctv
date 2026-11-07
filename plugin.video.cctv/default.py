@@ -81,8 +81,8 @@ def main():
             _chlist(handle, base, kodi, pages, params)
         elif mode == "pianku":
             _pianku(handle, base, kodi, pages, params)
-        elif mode == "pkfilter":
-            _pk_filter(handle, base, kodi, pages, params)
+        elif mode in ("pksel", "pkfilter"):
+            _pksel(handle, base, kodi, pages, params)
         elif mode == "pklist":
             _pk_list(handle, base, kodi, pages, params)
         elif mode == "netdrama":
@@ -95,6 +95,8 @@ def main():
             _tingyin_list(handle, base, kodi, pages, params)
         elif mode == "ty_search":
             _ty_search(handle, base, kodi, portal, params)
+        elif mode == "ty_topic":
+            _ty_topic(handle, base, kodi, pages, params)
         elif mode == "chunwan":
             _chunwan(handle, base, kodi, pages)
         elif mode == "chunwan_board":
@@ -297,6 +299,7 @@ def _render_items(handle, base, kodi, items):
 
 # ---------------------------------------------------------------- 片库
 def _pianku(handle, base, kodi, pages, params):
+    """片库：先选四大类；进类之后直接就是全部内容（按最新），顶上放筛选。"""
     cat = params.get("cat") or ""
     if not cat:
         for row in pages.PIANKU_CATS:
@@ -305,31 +308,36 @@ def _pianku(handle, base, kodi, pages, params):
         kodi.end_directory(handle)
         return
 
+    _pk_list(handle, base, kodi, pages, {"cat": cat, "page": "1"})
+
+
+def _pksel(handle, base, kodi, pages, params):
+    """片库筛选：先弹框选类别/地区/年份/字母，再弹框选具体值，然后出结果。"""
+    cat = params.get("cat") or ""
     groups = pages.pianku_groups(cat)
     if not groups:
         kodi.end_directory(handle, succeeded=False)
         return
+
+    labels = []
     for gkey, glabel, values in groups:
-        kodi.add_folder(handle, base, "%s（%d）" % (glabel, len(values) - 1), "pkfilter",
-                        cat=cat, g=gkey, plot="%s · %s" % (cat, glabel))
-    kodi.add_folder(handle, base, "全部（按最新）", "pklist", cat=cat, g="", v="", page=1,
-                    plot="%s 的全部内容，按最新排序" % cat)
-    kodi.end_directory(handle)
-
-
-def _pk_filter(handle, base, kodi, pages, params):
-    cat = params.get("cat") or ""
-    gkey = params.get("g") or ""
-    groups = dict((g, v) for g, _, v in pages.pianku_groups(cat))
-    values = groups.get(gkey) or []
-    if not values:
-        kodi.end_directory(handle, succeeded=False)
+        labels.append("%s（%d）" % (glabel, max(0, len(values) - 1)) if len(values) > 1
+                      else glabel)
+    idx = xbmcgui.Dialog().select("筛选 · %s" % cat, labels)
+    if idx < 0:
+        _pk_list(handle, base, kodi, pages, {"cat": cat, "page": "1"})
         return
-    for label, value in values:
-        kodi.add_folder(handle, base, label, "pklist",
-                        cat=cat, g=gkey, v=value, page=1,
-                        plot="%s · %s" % (cat, label))
-    kodi.end_directory(handle)
+
+    gkey, glabel, values = groups[idx]
+    vidx = xbmcgui.Dialog().select(glabel, [label for label, _value in values])
+    if vidx < 0:
+        _pk_list(handle, base, kodi, pages, {"cat": cat, "page": "1"})
+        return
+
+    value = values[vidx][1]
+    kodi.log("pianku filter %s %s=%r" % (cat, gkey, value))
+    _pk_list(handle, base, kodi, pages,
+             {"cat": cat, "g": gkey, "v": value, "page": "1"})
 
 
 def _pk_list(handle, base, kodi, pages, params):
@@ -346,12 +354,19 @@ def _pk_list(handle, base, kodi, pages, params):
         kodi.end_directory(handle)
         return
 
+    # 筛选永远排在第一行
+    label = "筛选"
+    if filters:
+        label = "筛选（当前：%s）" % value
+    kodi.add_folder(handle, base, label, "pksel", cat=cat,
+                    plot="按类别 / 地区 / 年份 / 字母筛选%s" % cat)
+
     for it in items:
-        label = it["title"]
+        row_label = it["title"]
         if it.get("label"):
-            label = "%s（%s）" % (label, it["label"])
+            row_label = "%s（%s）" % (row_label, it["label"])
         kodi.add_folder(
-            handle, base, label, "album",
+            handle, base, row_label, "album",
             thumb=it.get("thumb") or None,
             plot=it.get("plot") or it["title"],
             id=it.get("album") or "",
@@ -397,14 +412,64 @@ def _netdrama_eps(handle, base, kodi, pages, params):
 
 
 # ---------------------------------------------------------------- 听音
+_TY_ALBUM_RE = re.compile(r"(VIDA[0-9A-Za-z]+)")
+
+
 def _tingyin(handle, base, kodi, pages):
-    # 2.1.3：网页搜索的第三个页签是「音频」，放到听音里单独搜；
-    # 根菜单的「搜索」只搜视频（文章的搜索还没做）。
-    kodi.add_folder(handle, base, "搜索音频", "ty_search",
-                    plot="按关键词搜央视网的音频节目（对应网页搜索的「音频」一栏）")
+    # 2.2：搜索音频、历史、电视剧固定在最前面；听音首页其余板块全部平铺到
+    # 根目录，用 [板块] 标注来源。「搜索音频」不再写左侧介绍。
+    kodi.add_folder(handle, base, "搜索音频", "ty_search")
     for i, sec in enumerate(pages.TY_SECTIONS):
         kodi.add_folder(handle, base, sec["name"], "tingyin_list",
                         i=i, plot="听音 · %s" % sec["name"])
+
+    try:
+        sections = pages.ty_home_sections()
+    except Exception as exc:
+        kodi.log("tingyin home failed: %r" % exc, xbmc.LOGWARNING)
+        sections = []
+
+    for name, items in sections:
+        for it in items:
+            label = "[%s]%s" % (name, it["title"])
+            thumb = it.get("thumb") or None
+            url = it["url"]
+            if it.get("topic"):
+                kodi.add_folder(handle, base, label, "ty_topic",
+                                u=quote(url, safe=""), thumb=thumb,
+                                plot="听音 · %s / %s" % (name, it["title"]))
+                continue
+            album = _TY_ALBUM_RE.search(url or "")
+            if album:
+                kodi.add_folder(handle, base, label, "album", id=album.group(1),
+                                thumb=thumb, plot="听音 · %s / %s" % (name, it["title"]))
+                continue
+            kodi.add_playable(
+                handle, base, label, "play",
+                thumb=thumb, plot="听音 · %s / %s" % (name, it["title"]),
+                u=quote(url, safe=""),
+                context=kodi.download_context(
+                    base, "download", "下载…", u=quote(url, safe=""), t=it["title"]),
+            )
+    kodi.end_directory(handle)
+
+
+def _ty_topic(handle, base, kodi, pages, params):
+    """听音专题页（听精品 / 名家讲堂 里那些图标）。"""
+    url = unquote(params.get("u") or "")
+    if not url:
+        kodi.end_directory(handle, succeeded=False)
+        return
+    try:
+        items = pages.ty_topic_items(url)
+    except Exception as exc:
+        kodi.log("ty topic failed: %r" % exc, xbmc.LOGWARNING)
+        items = []
+    if not items:
+        kodi.notify("这个听音专题没抓到内容")
+        kodi.end_directory(handle, succeeded=False)
+        return
+    _render_items(handle, base, kodi, items)
     kodi.end_directory(handle)
 
 
@@ -517,45 +582,96 @@ def _panda(handle, base, kodi, pages):
 
 
 # ---------------------------------------------------------------- 首页
+def _plain_label(name):
+    """去掉栏目名后面的「（13）」「（9 个栏目）」这类尾巴。"""
+    return re.sub(r"[（(][^）)]*[）)]\s*$", "", (name or "").strip())
+
+
+def _section_short(name):
+    """首页板块名 → 方括号标签（今日热门 / 片库 …）。"""
+    plain = _plain_label(name)
+    for key in ("今日热门", "片库", "直播导视", "看点", "收视TOP榜", "经典影视剧场"):
+        if key in plain:
+            return key
+    return plain
+
+
+def _add_home_item(handle, base, kodi, item, label=None):
+    text = label or item["title"]
+    if item.get("kind") == "article":
+        kodi.add_folder(
+            handle, base, text, "article",
+            thumb=item.get("thumb") or None,
+            plot=item.get("plot") or item["title"],
+            date=item.get("date") or "",
+            u=quote(item["url"], safe=""),
+            context=kodi.download_context(
+                base, "dltext", "下载文本…", u=quote(item["url"], safe=""), t=item["title"]
+            ),
+        )
+    elif item.get("kind") == "live":
+        kodi.add_playable(handle, base, text, "liveplay", ch=item["ch"],
+                          thumb=item.get("thumb") or None,
+                          plot=item.get("plot") or "")
+    else:
+        kodi.add_playable(
+            handle, base, text, "play",
+            thumb=item.get("thumb") or None,
+            plot=item.get("plot") or item["title"],
+            date=item.get("date") or "",
+            u=quote(item["url"], safe=""),
+            context=kodi.download_context(
+                base, "download", "下载…", u=quote(item["url"], safe=""), t=item["title"]
+            ),
+        )
+
+
 def _home(handle, base, addon, kodi, portal, pages, params):
     sec = params.get("sec")
 
     if sec is None or sec == "":
-        # 2.1：首页根目录直接放「正在热播」和「精彩推荐」的视频，
-        # 直播导视去掉了（直播本来就点不开，留着是个死入口）。
+        # 2.2：首页根目录 = 剩下的板块（顶部）+ 看点 + 正在热播/精彩推荐
+        # + 「今日热门」「片库」两段的全部视频（前面加 [板块] 标注）。
         hot = pages.home_hotplay()
         picks = pages.home_picks()
-        kodi.log("home: 正在热播 %d 条，精彩推荐 %d 条" % (len(hot), len(picks)))
+        sections = portal.home_sections() or []
+        limit = max(1, kodi.setting_int(addon, "home_limit", 80))
+        show_thumb = kodi.setting_bool(addon, "show_thumb", True)
+
+        flatten = []
+        for i, (name, items) in enumerate(sections):
+            plain = _plain_label(name)
+            if "直播导视" in plain:
+                continue
+            if "看点" in plain:
+                continue
+            if "今日热门" in plain or "片库" in plain:
+                flatten.append((_section_short(name), i, items))
+                continue
+            kodi.add_folder(handle, base, plain, "home", sec=i,
+                            thumb=(items[0].get("thumb") if items else None) or None,
+                            plot="首页板块：%s" % plain)
+
+        kodi.add_folder(handle, base, "看点", "kandian",
+                        plot="看点：今日亚洲、国宝·发现、军事科技…")
 
         for it in hot:
-            kodi.add_playable(
-                handle, base, it["title"], "play",
-                thumb=it.get("thumb") or None,
-                plot="正在热播 · %s" % it["title"],
-                u=quote(it["url"], safe=""),
-                context=kodi.download_context(
-                    base, "download", "下载…", u=quote(it["url"], safe=""), t=it["title"]),
-            )
+            _add_home_item(handle, base, kodi, it)
         for it in picks:
-            kodi.add_playable(
-                handle, base, it["title"], "play",
-                plot="精彩推荐 · %s" % it["title"],
-                u=quote(it["url"], safe=""),
-                context=kodi.download_context(
-                    base, "download", "下载…", u=quote(it["url"], safe=""), t=it["title"]),
-            )
+            _add_home_item(handle, base, kodi, it)
 
-        kodi.add_folder(handle, base, "看点（%d 个栏目）" % len(pages.KANDIAN_COLUMNS),
-                        "kandian", plot="看点：今日亚洲、国宝·发现、军事科技…")
+        for tag, _idx, items in flatten:
+            items = items[:limit]
+            if show_thumb:
+                try:
+                    from resources.lib import cctv
 
-        sections = portal.home_sections() or []
-        skip = ("直播导视", "看点")
-        for i, (name, items) in enumerate(sections):
-            if any(s in name for s in skip):
-                continue
-            kodi.add_folder(handle, base, "%s（%d）" % (name, len(items)), "home",
-                            sec=i, thumb=items[0].get("thumb") or None,
-                            plot="首页板块：%s" % name)
+                    items = cctv.fill_thumbs(items, deadline=4.0)
+                except Exception as exc:
+                    kodi.log("home thumbs failed: %r" % exc, xbmc.LOGWARNING)
+            for item in items:
+                _add_home_item(handle, base, kodi, item,
+                               label="[%s]%s" % (tag, item["title"]))
         kodi.end_directory(handle)
         return
 
@@ -586,43 +702,21 @@ def _home(handle, base, addon, kodi, portal, pages, params):
             kodi.log("home thumbs failed: %r" % exc, xbmc.LOGWARNING)
 
     for item in items:
-        if item.get("kind") == "article":
-            kodi.add_folder(
-                handle, base, item["title"], "article",
-                thumb=item.get("thumb") or None,
-                plot=item.get("plot") or item["title"],
-                date=item.get("date") or "",
-                u=quote(item["url"], safe=""),
-                context=kodi.download_context(
-                    base, "dltext", "下载文本…", u=quote(item["url"], safe=""), t=item["title"]
-                ),
-            )
-        elif item.get("kind") == "live":
-            kodi.add_playable(handle, base, item["title"], "liveplay",
-                              ch=item["ch"],
-                              plot=item.get("plot") or "")
-        else:
-            kodi.add_playable(
-                handle, base, item["title"], "play",
-                thumb=item.get("thumb") or None,
-                plot=item.get("plot") or item["title"],
-                date=item.get("date") or "",
-                u=quote(item["url"], safe=""),
-                context=kodi.download_context(
-                    base, "download", "下载…", u=quote(item["url"], safe=""), t=item["title"]
-                ),
-            )
+        _add_home_item(handle, base, kodi, item)
     kodi.end_directory(handle)
 
 
 # ---------------------------------------------------------------- 新闻
 def _news(handle, base, kodi, portal, pages):
-    """新闻频道那条子导航：新闻/国内/国际/经济/社会/法治/图片/文娱/科技/生活/
-    军事/快看，外加「原创」和「更多」两个下拉。"""
+    """新闻频道那条子导航：要闻/国内/…/军事，加上时政、原创（直接铺开）、更多。
+
+    2.2.0：「原创」不再是二级菜单，7 个栏目直接放新闻根目录；标题后的栏目数去掉；
+    「快看」整栏移除（接口还是不通，不修了）。
+    """
     names = (("news", "要闻"), ("china", "国内"), ("world", "国际"),
              ("economy", "经济"), ("society", "社会"), ("law", "法治"),
              ("ent", "文娱"), ("tech", "科技"),
-             ("life", "生活"), ("military", "军事"), ("kuaikan", "快看"))
+             ("life", "生活"), ("military", "军事"))
     extra = dict((src["name"], i) for i, src in enumerate(pages.NEWS_EXTRA))
 
     for key, label in names:
@@ -635,11 +729,13 @@ def _news(handle, base, kodi, portal, pages):
 
     kodi.add_folder(handle, base, "时政", "shizheng",
                     plot="人民领袖习近平、习式妙语")
-    kodi.add_folder(handle, base, "原创（%d）" % len(pages.ORIGINAL), "newsgroup",
-                    g="original",
-                    plot="联播+ / 热解读 / 天天学习 / 央视快评 / 锋面 / 8点见 / 小央画话")
-    kodi.add_folder(handle, base, "更多（%d）" % len(pages.MORE_NEWS), "newsgroup",
-                    g="morenews", plot="人物 / 专题")
+
+    for i, src in enumerate(pages.ORIGINAL):
+        kodi.add_folder(handle, base, src["name"], "src", g="original", i=i,
+                        plot="央视网·新闻原创·%s" % src["name"])
+
+    kodi.add_folder(handle, base, "更多", "newsgroup", g="morenews",
+                    plot="人物 / 专题")
     kodi.end_directory(handle)
 
 
@@ -753,8 +849,23 @@ def _sports(handle, base, kodi, portal, params):
                         grp="prog",
                         plot="央视体育的名牌栏目：体育新闻、体育世界、天下足球、"
                              "足球之夜、篮球公园…")
-        kodi.add_folder(handle, base, "赛事", "matches",
-                        plot="央视体育的赛程与比赛视频：NBA、CBA、英超、中超…")
+        # 2.2：赛事不再单独一层壳，各个联赛直接铺在「体育」下面
+        try:
+            leagues = portal.sports_leagues()
+        except Exception as exc:
+            kodi.log("sports leagues failed: %r" % exc, xbmc.LOGERROR)
+            leagues = []
+        if leagues:
+            for row in leagues:
+                label = row["name"]
+                if row.get("kind"):
+                    label = "%s（%s）" % (label, row["kind"])
+                kodi.add_folder(handle, base, label, "matchlist", l=row["id"],
+                                thumb=row.get("logo") or None,
+                                plot="%s · 近三周的赛程" % row["name"])
+        else:
+            kodi.add_folder(handle, base, "赛事（点这里重试）", "matches",
+                            plot="赛程接口暂时打不开")
         kodi.end_directory(handle)
         return
 
@@ -954,18 +1065,12 @@ def _match(handle, base, kodi, portal, params):
     digest = portal.match_stats_digest(game, stats)
 
     if not items:
-        # 央视还没把这场比赛的视频挂到赛程上：别留空目录，
-        # 至少给「技术统计」和「按队名搜索」两个能点开的入口。
-        kodi.log("match %s: 没有视频，给技术统计 + 搜索入口" % game_id)
+        # 央视还没把这场比赛的视频挂到赛程上：只给技术统计，不要再摆「搜索」入口
+        # （自动搜索已经在 sports_game_items 里做过了）。
+        kodi.log("match %s: 没有视频，只给技术统计" % game_id)
         label = "技术统计｜%s" % digest if digest else "技术统计"
         kodi.add_folder(handle, base, label, "matchinfo", id=game_id, plot=report)
-        query = ("%s %s" % (game.get("homeName") or "",
-                            game.get("guestName") or "")).strip()
-        if query:
-            kodi.add_folder(handle, base, "搜索这场比赛的相关视频", "search", q=query,
-                            plot="央视还没把这场比赛的视频挂到赛程上，"
-                                 "可以按「%s」去视频库搜一下" % query)
-        kodi.notify("这场比赛的视频还没上线，先看技术统计或搜索相关视频")
+        kodi.notify("这场比赛的视频还没上线，先看技术统计")
         kodi.end_directory(handle)
         return
 
@@ -976,11 +1081,46 @@ def _match(handle, base, kodi, portal, params):
     clips = [it for it in items if not it.get("full")]
     kodi.log("match %s: 赛事 %d 条，集锦 %d 条" % (game_id, len(full), len(clips)))
 
+    # 网站对已结束的比赛会在顶部自动播一个「比赛回放」（用的就是第一段视频）。
+    # 有全场录像时直接把全场标成「比赛回放」；只有集锦时补一个和站点一样的入口。
+    if game.get("gameStatus") == 3 and items and not full:
+        first = items[0]
+        home = (game.get("homeName") or "").strip()
+        guest = (game.get("guestName") or "").strip()
+        home_score = str(game.get("homeScore") or "").strip()
+        guest_score = str(game.get("guestScore") or "").strip()
+        if home and guest:
+            shown = "%s %s-%s %s" % (home, home_score or "0", guest_score or "0", guest)
+        else:
+            shown = game.get("gameName") or "比赛"
+        replay_guid = first.get("guid") or ""
+        replay_page = first.get("url") or ""
+        kodi.add_playable(
+            handle, base, "比赛回放｜%s" % shown, "play",
+            thumb=first.get("thumb") or None,
+            plot="比赛回放\n\n%s\n\n%s" % (first["title"], report),
+            g=replay_guid,
+            u=quote(replay_page, safe="") if replay_page else "",
+            context=kodi.download_context(
+                base, "download", "下载…",
+                g=replay_guid, u=quote(replay_page, safe="") if replay_page else "",
+                t=shown,
+            ),
+        )
+
+    seen_titles = set()
     for it in items:
         is_full = bool(it.get("full"))
         short = _short_title(it["title"])
-        # 「赛事」单独标出来，免得跟集锦混在一起看不出来
-        title = "赛事｜%s" % short if is_full else short
+        if is_full:
+            # 全场录像就是站点顶部的「比赛回放」
+            title = "比赛回放｜%s" % short
+        else:
+            title = short
+        if title in seen_titles:
+            # 同一场有时会挂两版全场（不同码率/剪辑），标题一样就只留一条
+            continue
+        seen_titles.add(title)
         plot = it["title"]
         if is_full:
             plot = "全场录像\n\n" + plot
@@ -1001,14 +1141,7 @@ def _match(handle, base, kodi, portal, params):
             ),
         )
 
-    # 没有全场时再给一个「按队名搜索」的入口：赛程没挂上的视频，
-    # 视频库里有时已经发了（例如 11-03 辽宁打广州的全场）。
-    if not full:
-        query = ("%s %s" % (game.get("homeName") or "",
-                            game.get("guestName") or "")).strip()
-        if query:
-            kodi.add_folder(handle, base, "搜索这场比赛的相关视频", "search", q=query,
-                            plot="赛程里没挂到这场比赛的视频，可以按「%s」去视频库再搜一次" % query)
+    # 没有全场也不再摆「搜索」入口：视频库的补全已经自动做过了。
 
     kodi.end_directory(handle)
 
@@ -1471,10 +1604,10 @@ def _download_dir(addon, kodi, dl):
 
 
 def _download(handle, addon, kodi, dl, params):
-    """长按视频 →「下载…」：先弹清晰度列表，每档都带预览按钮。
+    """长按视频 →「下载…」：先弹清晰度列表，选一档就逐片存文件。
 
-    一个列表里每档给两行：▶ 预览 / ⬇ 下载，最后一行是下载目录。
-    选预览就播 20 秒再回到这个框，选下载就逐片存文件。
+    2.2.0：去掉预览按钮和预览时长设置；列表里优先给 H5E 解密出来的
+    720P / 1080P 高清档（明文梯只有 360P），最后一行仍是下载目录。
     """
     guid = params.get("g") or ""
     page_url = unquote(params.get("u") or "")
@@ -1498,15 +1631,9 @@ def _download(handle, addon, kodi, dl, params):
         entries = []
         labels = []
         for stream in streams:
-            labels.append("▶ 预览  %s" % stream["label"])
-            entries.append(("preview", stream))
-
             size = stream.get("size") or 0
             hint = " · 约 %s" % dl.human_size(size) if size else ""
-            if stream.get("encrypted"):
-                labels.append("✖ 加密流，不能下载  %s" % stream["label"])
-            else:
-                labels.append("⬇ 下载  %s%s" % (stream["label"], hint))
+            labels.append("⬇ 下载  %s%s" % (stream["label"], hint))
             entries.append(("download", stream))
 
         labels.append("📁 下载目录：%s" % folder)
@@ -1525,47 +1652,8 @@ def _download(handle, addon, kodi, dl, params):
                 kodi.notify("下载目录已改为：%s" % picked)
             continue
 
-        if kind == "preview":
-            _preview(addon, kodi, stream, title)
-            continue
-
-        if stream.get("encrypted"):
-            kodi.notify("这条流是加密的，不能下载，可以先预览", error=True)
-            continue
-
         _save_stream(addon, kodi, dl, stream, title, folder)
         return
-
-
-def _preview(addon, kodi, stream, title):
-    """预览：直接用 Kodi 播放器放这一档，放够设定时长就停下回到清晰度列表。"""
-    seconds = max(5, kodi.setting_int(addon, "preview_seconds", 20))
-    kodi.log("preview %s %s" % (stream["label"], stream["url"]))
-
-    player = xbmc.Player()
-    item = xbmcgui.ListItem(path=stream["url"], offscreen=True)
-    item.setInfo("video", {"title": "%s（%s 预览）" % (title, stream["label"])})
-    try:
-        player.play(stream["url"], item)
-    except Exception as exc:
-        kodi.notify("预览失败：%s" % exc, error=True)
-        return
-
-    monitor = xbmc.Monitor()
-    startup = time.monotonic() + 10
-    while not player.isPlaying() and time.monotonic() < startup:
-        if monitor.waitForAbort(0.2):
-            return
-
-    deadline = time.monotonic() + seconds
-    while player.isPlaying() and time.monotonic() < deadline:
-        if monitor.waitForAbort(0.25):
-            return
-
-    try:
-        player.stop()
-    except Exception:
-        pass
 
 
 def _save_stream(addon, kodi, dl, stream, title, folder):
@@ -1590,7 +1678,10 @@ def _save_stream(addon, kodi, dl, stream, title, folder):
         return not kodi.progress_canceled(progress)
 
     try:
-        result = dl.download_hls(stream["url"], dest, callback, estimate_bytes=estimate)
+        if stream.get("h5e"):
+            result = dl.download_h5e(stream["url"], dest, callback, estimate_bytes=estimate)
+        else:
+            result = dl.download_hls(stream["url"], dest, callback, estimate_bytes=estimate)
     except dl.Cancelled:
         kodi.progress_close(progress)
         kodi.notify("已取消下载，临时文件已删除")

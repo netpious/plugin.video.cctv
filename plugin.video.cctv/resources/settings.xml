@@ -23,6 +23,5 @@
     <setting id="download_path" type="folder" label="下载目录（留空用默认）"
              default="special://profile/addon_data/plugin.video.cctv/downloads/"
              option="writeable"/>
-    <setting id="preview_seconds" type="number" label="预览时长（秒）" default="20"/>
   </category>
 </settings>

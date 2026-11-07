@@ -121,6 +121,29 @@ def pick_h5e(info):
     return "", ""
 
 
+def variants(master_url):
+    """公开：H5E master 里的全部码流，按高到低返回 [{height, resolution, bandwidth, url}]。"""
+    out = []
+    for bw, res, media in _variants(master_url):
+        try:
+            height = int(str(res).lower().split("x")[-1])
+        except (ValueError, IndexError):
+            height = 0
+        try:
+            width = int(str(res).lower().split("x")[0])
+        except (ValueError, IndexError):
+            width = 0
+        out.append({"height": height, "width": width, "resolution": res,
+                    "bandwidth": bw, "url": media})
+    out.sort(key=lambda r: (r["height"], r["bandwidth"]), reverse=True)
+    return out
+
+
+def segments(media_url):
+    """公开：媒体清单 -> (分片地址, 时长)。"""
+    return _media_playlist(media_url)
+
+
 class Playback(object):
     """一次播放对应的解密代理。"""
 

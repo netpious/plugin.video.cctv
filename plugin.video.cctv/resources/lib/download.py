@@ -232,11 +232,48 @@ def _fill_detail(stream, referer):
         stream["error"] = str(exc)
 
 
+def h5e_streams(info):
+    """H5E（解密高清）档位：720P / 1080P。返回和明文档同形状的 rows。
+
+    2.2.0：明文 /asp/hls/ 梯最高只有 360P，H5E 那条梯才有 720P/1080P。
+    这里只列 >=720P 的档，免得和明文档重复。
+    """
+    from . import h5eplay
+
+    try:
+        master, _which = h5eplay.pick_h5e(info or {})
+    except Exception:
+        return []
+    if not master:
+        return []
+
+    rows = []
+    try:
+        variants = h5eplay.variants(master)
+    except Exception:
+        return []
+    for v in variants:
+        if v["height"] < 720:
+            continue
+        rows.append({
+            "tier": "h5e%s" % v["height"],
+            "url": v["url"],
+            "master": master,
+            "width": v["width"],
+            "height": v["height"],
+            "bandwidth": v["bandwidth"],
+            "seg": "",
+            "size": 0,
+            "h5e": True,
+        })
+    return rows
+
+
 def list_streams(guid="", page_url="", referer=None):
     """返回 (标题, 清晰度列表)，列表从高到低排好。
 
-    只用**明文** /asp/hls/ 档位：加密的 /asp/enc/ 那套解出来就是花屏，
-    与其给用户一个「1080P」的乱码，不如只列真正能播的档位。
+    明文 /asp/hls/ 档照旧；另外把 H5E 的 720P/1080P 高清档排在最前面
+    （下载时逐片解密，见 download_h5e）。
     """
     from . import cctv
 
@@ -249,6 +286,9 @@ def list_streams(guid="", page_url="", referer=None):
     title = info.get("title") or ""
 
     rows = cctv.clear_ladders(info)
+    hd = h5e_streams(info)
+    if hd:
+        rows = hd + rows
     if not rows:
         raise ValueError("没有找到能正常播放的清晰度")
 
@@ -256,9 +296,51 @@ def list_streams(guid="", page_url="", referer=None):
         row["index"] = i
         row["label"] = quality_label(row)
         row["size"] = estimate_size(row)
+        row.setdefault("h5e", False)
         row["encrypted"] = False
         row.setdefault("ext", ".ts")
+    rows.sort(key=lambda r: (int(r.get("height") or 0), int(r.get("bandwidth") or 0)),
+              reverse=True)
     return title, rows
+
+
+def download_h5e(media_url, dest, callback=None, referer=REFERER, estimate_bytes=0):
+    """下载 H5E 档：逐片拉下来、解密成明文 TS，再顺序写进同一个文件。
+
+    callback(done_bytes, estimate_bytes, index, total) 返回 False 表示取消。
+    """
+    from . import h5e
+    from . import h5eplay
+
+    segs, _durs = h5eplay.segments(media_url)
+    if not segs:
+        raise ValueError("H5E 清单里没有分片")
+
+    total = len(segs)
+    written = 0
+    vpid = None
+    partial = dest + ".part"
+    ensure_dir(os.path.dirname(dest))
+    try:
+        with open(partial, "wb") as handle:
+            for index, url in enumerate(segs, 1):
+                raw = h5eplay._get(url, timeout=SEGMENT_TIMEOUT)
+                if vpid is None:
+                    vpid = h5e.video_pid(raw)
+                data, stats = h5e.decrypt_ts(raw, vpid)
+                if not stats.get("ok"):
+                    # 这一片不是加密的（或解不出来），按原样写，别把整次下载毁掉
+                    data = raw
+                handle.write(data)
+                written += len(data)
+                if callback and not callback(written, estimate_bytes, index, total):
+                    raise Cancelled()
+    except Exception:
+        _silent_remove(partial)
+        raise
+
+    os.replace(partial, dest)
+    return {"path": dest, "bytes": written, "segments": total, "duration": 0}
 
 
 # ---------------------------------------------------------------- 下载

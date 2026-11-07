@@ -103,6 +103,7 @@ PIANKU_FILTERS = {
                ("其他", "其他")),
         "dq": (("全部", ""), ("内地（大陆）", "内地（大陆）"), ("港澳台", "港澳台"),
                ("欧美", "欧美")),
+        "nf": (("全部", ""),) + tuple((str(y), str(y)) for y in range(2025, 1999, -1)),
         "szm": _LETTERS,
     },
     "纪录片": {
@@ -161,6 +162,7 @@ PIANKU_FILTERS = {
                ("民歌大会", "民歌大会"), ("感动中国", "感动中国"), ("中华之光", "中华之光"),
                ("科技盛典", "科技盛典"), ("寻找最美孝心少年", "寻找最美孝心少年"),
                ("体坛风云人物", "体坛风云人物")),
+        "nf": (("全部", ""),) + tuple((str(y), str(y)) for y in range(2025, 2007, -1)),
         "szm": _LETTERS,
     },
 }
@@ -257,7 +259,64 @@ SHIZHENG = (
 )
 
 _LINK_RE = re.compile(r"<a\b[^>]*?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.S | re.I)
-_ARTI_RE = re.compile(r"/(?:ARTI|VIDE|PHOA)[A-Za-z0-9]+\.s?html?", re.I)
+_ARTI_RE = re.compile(r"/(?:ARTI|VIDE|VIDA|PHOA)[A-Za-z0-9]+\.s?html?", re.I)
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.I)
+_IMG_SRC_RE = re.compile(r'(?:data-original|data-src|src)=["\']([^"\']+)["\']', re.I)
+_IMG_ALT_RE = re.compile(r'(?:alt|title)=["\']([^"\']{2,120})["\']', re.I)
+
+
+def _img_of(html, last=False):
+    """从一段 HTML 里取一张像样的图（跳过懒加载占位图）。"""
+    tags = _IMG_TAG_RE.findall(html or "")
+    if last:
+        tags = list(reversed(tags))
+    for tag in tags:
+        m = _IMG_SRC_RE.search(tag)
+        if not m:
+            continue
+        url = m.group(1).strip()
+        if not url or "bottomplan" in url.lower() or url.startswith("data:"):
+            continue
+        return _norm_url(url)
+    return ""
+
+
+def _alt_of(html):
+    for tag in _IMG_TAG_RE.findall(html or ""):
+        m = _IMG_ALT_RE.search(tag)
+        if m and m.group(1).strip():
+            return _clean(m.group(1))
+    return ""
+
+
+_TITLE_TAG_RE = re.compile(
+    r'<(?:p|h[1-4]|span|div|b|strong)[^>]*class="[^"]*(?:title|tit|name|text|txt)[^"]*"[^>]*>'
+    r"(.*?)</(?:p|h[1-4]|span|div|b|strong)>",
+    re.S | re.I,
+)
+
+
+def _tidy_title(text):
+    """去掉从 JS 拼接字符串里带出来的 '+ ''+ ' 碎片。"""
+    t = _clean(text)
+    if "''" in t or "'+" in t or t.startswith("+"):
+        parts = re.findall(r"[\"']([^\"']{4,80})[\"']", text or "")
+        if parts:
+            t = max(parts, key=len).strip()
+    return t.strip()
+
+
+def _title_of(inner):
+    """预取锚点内部的标题：<p class="title"> > img alt > 纯文本。"""
+    m = _TITLE_TAG_RE.search(inner or "")
+    if m:
+        title = _tidy_title(m.group(1))
+        if len(title) >= 2:
+            return title
+    title = _alt_of(inner)
+    if title:
+        return title
+    return _tidy_title(inner)
 
 
 # ---------------------------------------------------------------- 基础
@@ -339,7 +398,12 @@ def vplist_items(chid, mid, page=1, size=VPLIST_PAGE_SIZE):
 
 
 def link_items(page_url, host="", limit=60, any_link=False):
-    """兜底：直接从栏目页把链接抠出来。没有翻页，抓多少算多少。"""
+    """兜底：直接从栏目页把链接抠出来。没有翻页，抓多少算多少。
+
+    2.2.0：顺手把缩略图也抠出来 —— 央博/乐龄/阅读/艺术/数智/5G/产业+ 这 7 个
+    频道没有 page id 接口，以前只拿到纯文字，在 Kodi 里全是一排没图的文件夹。
+    央视网自己没图的条目不补占位图（保持空白）。
+    """
     _, text = net.get_text(page_url, timeout=20, referer=page_url)
     items = []
     seen = set()
@@ -351,11 +415,16 @@ def link_items(page_url, host="", limit=60, any_link=False):
         if not _ARTI_RE.search(url) and not (any_link and url.endswith(".shtml")
                                              and host and host in url):
             continue
-        title = _clean(m.group(2))
-        if len(title) < 6 or url in seen:
+        inner = m.group(2)
+        title = _title_of(inner)
+        if len(title) < 4 or url in seen:
             continue
+        thumb = _img_of(inner)
+        if not thumb:
+            # 卡片布局里图片在链接前面，取最近的那一张
+            thumb = _img_of(text[max(0, m.start() - 600):m.start()], last=True)
         seen.add(url)
-        items.append(_item(title, url))
+        items.append(_item(title, url, thumb))
         if len(items) >= limit:
             break
     if len(items) < 5:
@@ -508,6 +577,100 @@ def ty_items(pid, page=1):
             "date": "",
         })
     return items, total
+
+
+# ---------------------------------------------------------------- 听音首页
+# 2.2.0：听音首页（tv.cctv.com/ty/m/index.shtml）的横幅下面有「历史 / 听精品 /
+# 听剧 / 名家讲堂 / 评书 / 相声·小品 …」好几段，每段十来条。以前只用接口取了
+# 历史、电视剧两个专辑列表，这些内容全丢了。这里把整页解析成
+# [(段名, [{"title", "url", "thumb"}])]，由界面层平铺到听音根目录。
+TY_HOME_URL = "https://tv.cctv.com/ty/m/index.shtml"
+_TY_TITLE_MARK = '<span class="mh_title">'
+_TY_SECTION_NAME_RE = re.compile(r"<i>([^<]{1,20})</i>")
+_TY_ITEM_RE = re.compile(
+    r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I
+)
+_TY_ITEM_TITLE_RE = re.compile(r'<p class="tit[^"]*"[^>]*>(.*?)</p>', re.S | re.I)
+_TY_ALBUM_RE = re.compile(r"(VIDA[0-9A-Za-z]+)")
+
+
+def ty_home_sections():
+    """听音首页的各个板块，返回 [(段名, items)]；每项带 url / title / thumb。"""
+    _, text = net.get_text(TY_HOME_URL, timeout=25, referer="https://tv.cctv.com/")
+    parts = text.split(_TY_TITLE_MARK)
+    sections = []
+    for part in parts[1:]:
+        m = _TY_SECTION_NAME_RE.search(part)
+        if not m:
+            continue
+        name = _clean(m.group(1))
+        if not name:
+            continue
+        items = []
+        seen = set()
+        for am in _TY_ITEM_RE.finditer(part):
+            url = _norm_url(am.group(1)).split("?")[0]
+            topic = "/ty/topic/" in url
+            if not _ARTI_RE.search(url) and not topic:
+                continue
+            inner = am.group(2)
+            tm = _TY_ITEM_TITLE_RE.search(inner)
+            title = _clean(tm.group(1)) if tm else (_clean(inner) or _alt_of(inner))
+            if len(title) < 2 or url in seen:
+                continue
+            seen.add(url)
+            thumb = _img_of(inner) or _img_of(
+                part[max(0, am.start() - 600):am.start()], last=True
+            )
+            items.append({"title": title, "url": url, "thumb": thumb,
+                          "topic": topic})
+            if len(items) >= 40:
+                break
+        if items:
+            sections.append((name, items))
+    return sections
+
+
+def _page_title(url):
+    """专辑页 <title> 当标题用（听音的专题页里图多、字少，只能这样补）。"""
+    try:
+        _st, text = net.get_text(url, timeout=15, referer=TY_HOME_URL)
+    except Exception:
+        return ""
+    m = re.search(r"<title>(.*?)</title>", text or "", re.S | re.I)
+    return _clean(m.group(1)) if m else ""
+
+
+def ty_topic_items(url):
+    """听音专题页（ty/topic/…）下的专辑列表，返回 series 条目。"""
+    _, text = net.get_text(url, timeout=25, referer=TY_HOME_URL)
+    items, seen = [], set()
+    for am in _TY_ITEM_RE.finditer(text):
+        link = _norm_url(am.group(1)).split("?")[0]
+        m = _TY_ALBUM_RE.search(link)
+        if not m or m.group(1) in seen:
+            continue
+        inner = am.group(2)
+        title = _clean(inner) or _alt_of(inner)
+        if len(title) < 2:
+            title = _page_title(link)
+        if len(title) < 2:
+            continue
+        seen.add(m.group(1))
+        items.append({
+            "kind": "series",
+            "title": title,
+            "url": link,
+            "album": m.group(1),
+            "thumb": _img_of(inner) or _img_of(
+                text[max(0, am.start() - 600):am.start()], last=True
+            ),
+            "plot": title,
+            "date": "",
+        })
+        if len(items) >= 20:
+            break
+    return items
 
 
 # ---------------------------------------------------------------- 总台春晚
