@@ -218,7 +218,7 @@ def build_url(base, **params):
     return base + "?" + urlencode(clean)
 
 
-def download_context(base, mode="download", label="下载…", **params):
+def download_context(base, mode="download", label="保存", **params):
     """长按视频/文本时弹出的「下载」菜单项。"""
     return [(label, build_url(base, mode=mode, **params))]
 
@@ -227,19 +227,39 @@ def end_directory(handle, succeeded=True):
     xbmcplugin.endOfDirectory(handle, succeeded=succeeded, cacheToDisc=False)
 
 
-def apply_context(item, context):
+def apply_context(item, context, base=None):
     """长按（遥控器 OK 长按 / 右键 / 键盘 C）弹出的菜单项。
 
     context 是 [(标签, 插件地址)]；地址必须是 plugin:// 完整地址，
     Kodi 只接受 RunPlugin(...) 这种内建命令包裹的形式。
+
+    2.2.2：把「保存」和全局项拼成一个列表，只调一次 addContextMenuItems ——
+    之前分两次调，菜单里只剩后一次的项，「保存」就丢了。
     """
-    if not context:
+    items = [(label, "RunPlugin(%s)" % url) for label, url in (context or [])]
+    if base:
+        items.extend(global_context(base))
+    if not items:
         return
-    items = [(label, "RunPlugin(%s)" % url) for label, url in context]
     try:
-        item.addContextMenuItems(items)
+        item.addContextMenuItems(items, replaceItems=False)
     except Exception as exc:
         log("addContextMenuItems failed: %r" % exc, xbmc.LOGWARNING)
+
+
+def global_context(base):
+    """每个条目「选项」菜单里都带的全局动作（2.2.0 beta2）。
+
+    用 Container.Update 换掉当前容器的内容 —— 它在插件目录里最稳；
+    beta1 用的 ActivateWindow(Videos,…) 在部分皮肤/窗口下点了没反应。
+    """
+    return [
+        ("返回到根目录", "Container.Update(%s?mode=root,replace)" % base),
+        ("搜索文章", "Container.Update(%s?mode=search_article,replace)" % base),
+        ("搜索音频", "Container.Update(%s?mode=ty_search,replace)" % base),
+        ("搜索视频", "Container.Update(%s?mode=search,replace)" % base),
+        ("刷新", "Container.Refresh"),
+    ]
 
 
 def add_folder(handle, base, label, mode, thumb=None, fanart=None, plot="", context=None, **extra):
@@ -257,7 +277,7 @@ def add_folder(handle, base, label, mode, thumb=None, fanart=None, plot="", cont
     if plot:
         info["plot"] = plot
     item.setInfo("video", info)
-    apply_context(item, context)
+    apply_context(item, context, base)
     xbmcplugin.addDirectoryItem(handle, url, item, isFolder=True)
 
 
@@ -306,7 +326,7 @@ def add_playable(handle, base, label, mode, thumb=None, fanart=None, plot="", da
         info["duration"] = secs
     item.setInfo("video", info)
     item.setProperty("IsPlayable", "true")
-    apply_context(item, context)
+    apply_context(item, context, base)
     xbmcplugin.addDirectoryItem(handle, url, item, isFolder=False)
 
 

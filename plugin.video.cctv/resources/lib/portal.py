@@ -1578,3 +1578,28 @@ def search_audio(keyword, page=1, page_size=20):
             }
         )
     return items, total
+
+def search_articles(keyword, page=1, page_size=20):
+    """文章搜索（2.2.0 beta1：从「选项」里的「搜索文章」进）。
+
+    走网页搜索的「文章」页签（手机接口 type=article），返回 ARTI/PHOA 链接；
+    点开复用现成的「报道」阅读链路。
+    """
+    from . import cctv as _cctv
+
+    rows, total = _cctv.search(keyword, page, page_size, kind="article")
+    items = []
+    for it in rows:
+        if it.get("playable", True):
+            continue        # 这条其实是视频，留给「搜索视频」
+        items.append(
+            {
+                "kind": "article",
+                "title": it["title"],
+                "url": it["url"],
+                "thumb": it.get("thumb") or "",
+                "plot": it.get("plot") or it["title"],
+                "date": it.get("date") or "",
+            }
+        )
+    return items, total

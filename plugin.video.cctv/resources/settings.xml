@@ -12,8 +12,26 @@
      boolean / integer / string（那是 <settings version="1"> 才搭配的写法）。 -->
 <settings>
   <category label="常规">
-    <setting id="home_limit" type="number" label="每个板块最多显示条数" default="80"/>
     <setting id="show_thumb" type="bool" label="显示缩略图" default="true"/>
+  </category>
+  <category label="频道显示">
+    <setting id="ch_panda" type="bool" label="熊猫" default="true"/>
+    <setting id="ch_chunwan" type="bool" label="总台春晚" default="true"/>
+    <setting id="ch_difang" type="bool" label="地方" default="true"/>
+    <setting id="ch_xiangcun" type="bool" label="乡村振兴" default="true"/>
+    <setting id="ch_shengtai" type="bool" label="生态" default="true"/>
+    <setting id="ch_yidaiyilu" type="bool" label="一带一路" default="true"/>
+    <setting id="ch_yangbo" type="bool" label="央博" default="true"/>
+    <setting id="ch_wenhua" type="bool" label="文化" default="true"/>
+    <setting id="ch_lvyou" type="bool" label="旅游" default="true"/>
+    <setting id="ch_kepu" type="bool" label="科普" default="true"/>
+    <setting id="ch_jiankang" type="bool" label="健康" default="true"/>
+    <setting id="ch_leling" type="bool" label="乐龄" default="true"/>
+    <setting id="ch_yuedu" type="bool" label="阅读" default="true"/>
+    <setting id="ch_yishu" type="bool" label="艺术" default="true"/>
+    <setting id="ch_shuzhi" type="bool" label="数智" default="true"/>
+    <setting id="ch_5g" type="bool" label="5G" default="true"/>
+    <setting id="ch_chanye" type="bool" label="产业+" default="true"/>
   </category>
   <category label="播放">
     <setting id="h5e_play" type="bool"

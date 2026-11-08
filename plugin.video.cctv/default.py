@@ -23,8 +23,8 @@ URL 约定（Kodi 目录格式）：
     /?mode=search[&q=..&page=1]    搜索（结果里的剧集单独成入口）
     /?mode=play&u=<视频页>          播放点播
     /?mode=liveplay&ch=cctv1       播放直播
-    /?mode=download&g=..&u=..&t=..  下载（长按视频 →「下载…」，先选清晰度）
-    /?mode=dltext&u=..&t=..         下载报道正文（长按文本 →「下载文本…」）
+    /?mode=download&g=..&u=..&t=..  下载（长按视频 →「保存」，先选清晰度）
+    /?mode=dltext&u=..&t=..         下载报道正文（长按文本 →「保存文本」）
 """
 
 import re
@@ -40,9 +40,61 @@ import xbmcvfs
 
 ADDON_ID = "plugin.video.cctv"
 
+# main() 里赋值，供分页设置用（很多列表函数拿不到 addon 参数）
+_ADDON = None
+
+# 设置里的「每页最多显示」：20/40/60/80/不限（0=不限，按接口原页翻）
+_PAGE_LIMITS = (20, 40, 60, 80, 0)
+
+
+def _page_limit(kodi):
+    """2.2.1：每页条数设置已取消，固定按接口原本的单页走（返回 0）。"""
+    return 0
+
+
+def _view(fetch, page, limit, native):
+    """按「每页最多显示 limit 条」取一屏。fetch(api_page) -> (items, total)。
+
+    limit 可以比接口单页小（在接口页内切片）也可以大（拼几页），
+    limit=0 表示不限：按接口原本的单页条数走。
+    """
+    if not limit:
+        return fetch(page)
+    start = (page - 1) * limit
+    api = start // native + 1
+    offset = start % native
+    need = limit
+    items, total = [], 0
+    while need > 0:
+        part, count = fetch(api)
+        if count:
+            total = count
+        if not part:
+            break
+        chunk = part[offset:] if offset else part
+        take = chunk[:need]
+        items.extend(take)
+        need -= len(take)
+        offset = 0
+        api += 1
+        if len(part) < native:
+            break
+    return items, total
+
+
+def _has_next(page, limit, total, shown, native):
+    """要不要加「下一页」。不过这个最大量就不加。"""
+    if total:
+        if not limit:
+            return total > page * native
+        return page * limit < total
+    return bool(limit) and shown >= limit
+
 
 def main():
+    global _ADDON
     addon = xbmcaddon.Addon(ADDON_ID)
+    _ADDON = addon
     addon_path = xbmcvfs.translatePath(addon.getAddonInfo("path"))
     if addon_path not in sys.path:
         sys.path.insert(0, addon_path)
@@ -133,6 +185,8 @@ def main():
             _album_extra(handle, base, kodi, portal, params)
         elif mode == "search":
             _search(handle, base, kodi, cctv, portal, params)
+        elif mode == "search_article":
+            _search_article(handle, base, kodi, portal, params)
         elif mode == "live":
             _live(handle, base, kodi, cctv)
         elif mode == "play":
@@ -158,25 +212,23 @@ def main():
 
 # ---------------------------------------------------------------- 菜单
 def _root(handle, base, kodi):
-    # 只有「首页」「新闻」写简介：把里面的子栏目用斜杠列出来，别的都不写。
-    kodi.add_folder(handle, base, "首页", "home",
-                    plot="正在热播 / 精彩推荐 / 看点 / 片库 / 今日热门 / 收视TOP榜 / "
-                         "经典影视剧场")
-    kodi.add_folder(handle, base, "新闻", "news",
-                    plot="要闻 / 国内 / 国际 / 经济 / 社会 / 法治 / 文娱 / 科技 / "
-                         "生活 / 军事 / 快看 / 时政 / 原创 / 更多")
-    kodi.add_folder(handle, base, "视频", "videos")
-    kodi.add_folder(handle, base, "频道", "channels")
-    kodi.add_folder(handle, base, "体育", "sports")
-    kodi.add_folder(handle, base, "4K专区", "fourk")
-    kodi.add_folder(handle, base, "栏目", "columns")
-    kodi.add_folder(handle, base, "片库", "pianku")
-    kodi.add_folder(handle, base, "央视网剧", "netdrama")
-    kodi.add_folder(handle, base, "听音", "tingyin")
-    kodi.add_folder(handle, base, "熊猫", "panda")
-    kodi.add_folder(handle, base, "总台春晚", "chunwan")
-    kodi.add_folder(handle, base, "直播", "live")
-    kodi.add_folder(handle, base, "搜索", "search")
+    # 2.2.0 beta1：根目录只留 11 个入口；每个条目的「栏目介绍」就是栏目名本身。
+    # 「首页」改成「推荐」；新闻 / 熊猫 / 总台春晚 移进「频道」。
+    for label, mode in (
+        ("推荐内容", "home"),
+        ("新闻", "news"),
+        ("视频", "videos"),
+        ("频道", "channels"),
+        ("体育", "sports"),
+        ("4K专区", "fourk"),
+        ("栏目", "columns"),
+        ("片库", "pianku"),
+        ("央视网剧", "netdrama"),
+        ("听音", "tingyin"),
+        ("直播", "live"),
+        ("搜索", "search"),
+    ):
+        kodi.add_folder(handle, base, label, mode, plot=label)
     kodi.end_directory(handle)
 
 
@@ -189,10 +241,45 @@ def _shizheng(handle, base, kodi, pages):
 
 
 # ---------------------------------------------------------------- 频道
+# 「频道」里每个频道对应设置里的一个开关（设置 → 频道显示）
+_CHANNEL_SETTING = {
+    "熊猫": "ch_panda",
+    "总台春晚": "ch_chunwan",
+    "地方": "ch_difang",
+    "乡村振兴": "ch_xiangcun",
+    "生态": "ch_shengtai",
+    "一带一路": "ch_yidaiyilu",
+    "央博": "ch_yangbo",
+    "文化": "ch_wenhua",
+    "旅游": "ch_lvyou",
+    "科普": "ch_kepu",
+    "健康": "ch_jiankang",
+    "乐龄": "ch_leling",
+    "阅读": "ch_yuedu",
+    "艺术": "ch_yishu",
+    "数智": "ch_shuzhi",
+    "5G": "ch_5g",
+    "产业+": "ch_chanye",
+}
+
+
+def _channel_shown(kodi, name):
+    key = _CHANNEL_SETTING.get(name)
+    if not key:
+        return True
+    return kodi.setting_bool(_ADDON, key, True)
+
+
 def _channels(handle, base, kodi, pages):
+    """频道（2.2.1）：哪些显示哪些不显示，去「设置 → 频道显示」里调。"""
+    for label, mode in (("熊猫", "panda"), ("总台春晚", "chunwan")):
+        if _channel_shown(kodi, label):
+            kodi.add_folder(handle, base, label, mode, plot=label)
     for ch in pages.CHANNELS:
+        if not _channel_shown(kodi, ch["name"]):
+            continue
         kodi.add_folder(handle, base, ch["name"], "chlist", c=ch["name"],
-                        plot=ch.get("plot") or ch["name"])
+                        plot=ch["name"])
     kodi.end_directory(handle)
 
 
@@ -203,7 +290,9 @@ def _chlist(handle, base, kodi, pages, params):
         kodi.end_directory(handle, succeeded=False)
         return
 
-    items, total = pages.channel_items(name, page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: pages.channel_items(name, api), page, limit,
+                         pages.MIX_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这个频道没抓到内容，点这里重试", "chlist",
                         c=name, page=page)
@@ -211,8 +300,8 @@ def _chlist(handle, base, kodi, pages, params):
         return
 
     _render_items(handle, base, kodi, items)
-    size = pages.MIX_PAGE_SIZE
-    if total and page * size < min(total, 1000):
+    if _has_next(page, limit, total, len(items), pages.MIX_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 1000):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "chlist",
                         c=name, page=page + 1, plot="%s 共约 %d 条" % (name, total))
     kodi.end_directory(handle)
@@ -280,7 +369,7 @@ def _render_items(handle, base, kodi, items):
                 g=it.get("guid") or "",
                 u=quote(it["url"], safe="") if it.get("url") else "",
                 context=kodi.download_context(
-                    base, "download", "下载…",
+                    base, "download", "保存",
                     g=it.get("guid") or "", u=quote(it["url"], safe=""), t=it["title"],
                 ),
             )
@@ -292,7 +381,7 @@ def _render_items(handle, base, kodi, items):
             date=it.get("date") or "",
             u=quote(it["url"], safe=""),
             context=kodi.download_context(
-                base, "dltext", "下载文本…", u=quote(it["url"], safe=""), t=it["title"]
+                base, "dltext", "保存文本", u=quote(it["url"], safe=""), t=it["title"]
             ),
         )
 
@@ -347,7 +436,9 @@ def _pk_list(handle, base, kodi, pages, params):
     page = int(params.get("page") or 1)
     filters = {gkey: value} if gkey and value else {}
 
-    items, total = pages.pianku_items(cat, page, filters)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: pages.pianku_items(cat, api, filters), page, limit,
+                         pages.PIANKU_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一类没有内容，点这里重试", "pklist",
                         cat=cat, g=gkey, v=value, page=page)
@@ -372,8 +463,8 @@ def _pk_list(handle, base, kodi, pages, params):
             id=it.get("album") or "",
         )
 
-    size = pages.PIANKU_PAGE_SIZE
-    if page * size < min(total, pages.PIANKU_MAX):
+    if _has_next(page, limit, total, len(items), pages.PIANKU_PAGE_SIZE) \
+            and (not total or not limit or page * limit < pages.PIANKU_MAX):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "pklist",
                         cat=cat, g=gkey, v=value, page=page + 1,
                         plot="共约 %d 部" % total)
@@ -397,15 +488,17 @@ def _netdrama_eps(handle, base, kodi, pages, params):
     if not mid:
         kodi.end_directory(handle, succeeded=False)
         return
-    items, total = pages.netdrama_episodes(mid, page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: pages.netdrama_episodes(mid, api), page, limit,
+                         pages.NETDRAMA_PAGE_SIZE)
     if not items:
         # 有的网剧还没上传分集（实测 20 部里有 1 部是空的），不要留假入口
         kodi.notify("这一部还没有可播放的分集")
         kodi.end_directory(handle, succeeded=False)
         return
     _render_items(handle, base, kodi, items)
-    size = pages.NETDRAMA_PAGE_SIZE
-    if page * size < min(total, 500):
+    if _has_next(page, limit, total, len(items), pages.NETDRAMA_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 500):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "netdrama_eps",
                         mid=mid, page=page + 1, plot="共 %d 集" % total)
     kodi.end_directory(handle)
@@ -449,7 +542,7 @@ def _tingyin(handle, base, kodi, pages):
                 thumb=thumb, plot="听音 · %s / %s" % (name, it["title"]),
                 u=quote(url, safe=""),
                 context=kodi.download_context(
-                    base, "download", "下载…", u=quote(url, safe=""), t=it["title"]),
+                    base, "download", "保存", u=quote(url, safe=""), t=it["title"]),
             )
     kodi.end_directory(handle)
 
@@ -514,7 +607,7 @@ def _ty_search(handle, base, kodi, portal, params):
             g=guid,
             u=url,
             context=kodi.download_context(
-                base, "download", "下载…", g=guid, u=url, t=it["title"],
+                base, "download", "保存", g=guid, u=url, t=it["title"],
             ),
         )
 
@@ -531,14 +624,16 @@ def _tingyin_list(handle, base, kodi, pages, params):
         kodi.end_directory(handle, succeeded=False)
         return
     sec = pages.TY_SECTIONS[idx]
-    items, total = pages.ty_items(sec["pid"], page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: pages.ty_items(sec["pid"], api), page, limit,
+                         pages.TY_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有内容，点这里重试", "tingyin_list", i=idx, page=page)
         kodi.end_directory(handle)
         return
     _render_items(handle, base, kodi, items)
-    size = pages.TY_PAGE_SIZE
-    if page * size < min(total, 1000):
+    if _has_next(page, limit, total, len(items), pages.TY_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 1000):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "tingyin_list",
                         i=idx, page=page + 1, plot="共约 %d 个专辑" % total)
     kodi.end_directory(handle)
@@ -606,7 +701,7 @@ def _add_home_item(handle, base, kodi, item, label=None):
             date=item.get("date") or "",
             u=quote(item["url"], safe=""),
             context=kodi.download_context(
-                base, "dltext", "下载文本…", u=quote(item["url"], safe=""), t=item["title"]
+                base, "dltext", "保存文本", u=quote(item["url"], safe=""), t=item["title"]
             ),
         )
     elif item.get("kind") == "live":
@@ -621,7 +716,7 @@ def _add_home_item(handle, base, kodi, item, label=None):
             date=item.get("date") or "",
             u=quote(item["url"], safe=""),
             context=kodi.download_context(
-                base, "download", "下载…", u=quote(item["url"], safe=""), t=item["title"]
+                base, "download", "保存", u=quote(item["url"], safe=""), t=item["title"]
             ),
         )
 
@@ -635,7 +730,7 @@ def _home(handle, base, addon, kodi, portal, pages, params):
         hot = pages.home_hotplay()
         picks = pages.home_picks()
         sections = portal.home_sections() or []
-        limit = max(1, kodi.setting_int(addon, "home_limit", 80))
+        limit = 80
         show_thumb = kodi.setting_bool(addon, "show_thumb", True)
 
         flatten = []
@@ -689,7 +784,7 @@ def _home(handle, base, addon, kodi, portal, pages, params):
     kodi.log("home section %s: %d 条" % (name, len(items)))
 
     # 设置里的「每个板块最多显示条数」，默认 80；取前 N 条，避免一个板块几百条。
-    limit = max(1, kodi.setting_int(addon, "home_limit", 80))
+    limit = 80
     if len(items) > limit:
         items = items[:limit]
 
@@ -734,8 +829,10 @@ def _news(handle, base, kodi, portal, pages):
         kodi.add_folder(handle, base, src["name"], "src", g="original", i=i,
                         plot="央视网·新闻原创·%s" % src["name"])
 
-    kodi.add_folder(handle, base, "更多", "newsgroup", g="morenews",
-                    plot="人物 / 专题")
+    # 2.2.0 beta1：「更多」不再是一级菜单，人物 / 专题直接铺在新闻下。
+    for i, src in enumerate(pages.MORE_NEWS):
+        kodi.add_folder(handle, base, src["name"], "src", g="morenews", i=i,
+                        plot=src["name"])
     kodi.end_directory(handle)
 
 
@@ -744,7 +841,9 @@ def _newslist(handle, base, kodi, portal, params):
     page = int(params.get("page") or 1)
     name = dict(portal.NEWS_COLUMNS).get(col, col)
 
-    items, total = portal.news_items(col, page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: portal.news_items(col, api), page, limit,
+                         portal.NEWS_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一页没有内容，点这里重试", "newslist", c=col, page=page)
         kodi.end_directory(handle)
@@ -758,12 +857,12 @@ def _newslist(handle, base, kodi, portal, params):
             date=it.get("date") or "",
             u=quote(it["url"], safe=""),
             context=kodi.download_context(
-                base, "dltext", "下载文本…", u=quote(it["url"], safe=""), t=it["title"]
+                base, "dltext", "保存文本", u=quote(it["url"], safe=""), t=it["title"]
             ),
         )
 
-    shown = (page - 1) * portal.NEWS_PAGE_SIZE + len(items)
-    if shown < min(total, portal.NEWS_MAX):
+    if _has_next(page, limit, total, len(items), portal.NEWS_PAGE_SIZE) \
+            and (not total or not limit or page * limit < portal.NEWS_MAX):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "newslist",
                         c=col, page=page + 1, plot="%s 共约 %d 条" % (name, total))
     kodi.end_directory(handle)
@@ -804,7 +903,9 @@ def _article(handle, kodi, cctv, portal, params):
 # ---------------------------------------------------------------- 视频库
 def _videos(handle, base, kodi, portal, params):
     page = int(params.get("page") or 1)
-    items, total = portal.video_items(page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: portal.video_items(api), page, limit,
+                         portal.VIDEO_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一页没有内容，点这里重试", "videos", page=page)
         kodi.end_directory(handle)
@@ -820,12 +921,12 @@ def _videos(handle, base, kodi, portal, params):
             g=it.get("guid") or "",
             u=quote(it["url"], safe=""),
             context=kodi.download_context(
-                base, "download", "下载…",
+                base, "download", "保存",
                 g=it.get("guid") or "", u=quote(it["url"], safe=""), t=it["title"],
             ),
         )
 
-    if page * portal.VIDEO_PAGE_SIZE < total:
+    if _has_next(page, limit, total, len(items), portal.VIDEO_PAGE_SIZE):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "videos",
                         page=page + 1, plot="共约 %d 条视频" % total)
     kodi.end_directory(handle)
@@ -833,39 +934,30 @@ def _videos(handle, base, kodi, portal, params):
 
 # ---------------------------------------------------------------- 体育
 def _sports(handle, base, kodi, portal, params):
-    """体育：上层的两个入口（频道 / 央视名栏），下面各自展开。
+    """体育（2.2.0 beta1）：频道和央视名栏全部平铺在「体育」下面。
 
     频道来自 sports.cctv.com 的顶部导航（「推荐」除外，它就是首页本身），
     名栏来自首页那几个方框里带《》的电视栏目。
+    之前加的「赛事」（中超/NBA/世界杯…）整块去掉：央视大多只发集锦，
+    留在这里容易让人以为是整场回放。
     """
     grp = params.get("grp") or ""
 
     if not grp:
-        kodi.add_folder(handle, base, "频道", "sports",
-                        grp="ch",
-                        plot="央视体育的频道：奥林匹克频道、NBA、CBA、中超、"
-                             "英超、德甲、法甲、意甲、羽毛球、乒乓球、网球、排球…")
-        kodi.add_folder(handle, base, "央视名栏", "sports",
-                        grp="prog",
-                        plot="央视体育的名牌栏目：体育新闻、体育世界、天下足球、"
-                             "足球之夜、篮球公园…")
-        # 2.2：赛事不再单独一层壳，各个联赛直接铺在「体育」下面
+        # 2.2.0 beta2：央视名栏整块去掉（多数在「频道/CCTV5」里已经有）；
+        # 和联赛重名的频道直接借联赛的 logo 当缩略图。
+        logos = {}
         try:
-            leagues = portal.sports_leagues()
+            for row in portal.sports_leagues():
+                if row.get("logo"):
+                    logos[row["name"]] = row["logo"]
         except Exception as exc:
-            kodi.log("sports leagues failed: %r" % exc, xbmc.LOGERROR)
-            leagues = []
-        if leagues:
-            for row in leagues:
-                label = row["name"]
-                if row.get("kind"):
-                    label = "%s（%s）" % (label, row["kind"])
-                kodi.add_folder(handle, base, label, "matchlist", l=row["id"],
-                                thumb=row.get("logo") or None,
-                                plot="%s · 近三周的赛程" % row["name"])
-        else:
-            kodi.add_folder(handle, base, "赛事（点这里重试）", "matches",
-                            plot="赛程接口暂时打不开")
+            kodi.log("sports league logos failed: %r" % exc, xbmc.LOGWARNING)
+        for spec in portal.SPORTS_CHANNELS:
+            kodi.add_folder(handle, base, spec["name"], "sportsch",
+                            c=spec["name"],
+                            thumb=logos.get(spec["name"]) or None,
+                            plot=spec["name"])
         kodi.end_directory(handle)
         return
 
@@ -891,8 +983,13 @@ def _sports_channel(handle, base, kodi, portal, params):
     page_size = int(params.get("n") or 0)
 
     retry = dict(c=name, page=page)
+    limit = _page_limit(kodi)
     try:
-        items, total, source = portal.sports_channel_items(name, page)
+        items, total = _view(
+            lambda api: portal.sports_channel_items(name, api)[:2],
+            page, limit, portal.SPORTS_SEARCH_PAGE)
+        source = "cms"
+
     except Exception as exc:
         kodi.log("sports channel %s failed: %r" % (name, exc), xbmc.LOGERROR)
         kodi.notify("%s 暂时抓不到内容：%s" % (name or "体育频道", exc), error=True)
@@ -900,7 +997,7 @@ def _sports_channel(handle, base, kodi, portal, params):
         kodi.end_directory(handle)
         return
 
-    page_size = page_size or len(items) or 1
+    page_size = limit or page_size or len(items) or 1
     kodi.log("sports %s p%d: %d 条（来源 %s，共约 %d）" % (name, page, len(items), source, total))
 
     if not items:
@@ -921,7 +1018,7 @@ def _sports_channel(handle, base, kodi, portal, params):
                 duration=it.get("duration") or "",
                 u=url,
                 context=kodi.download_context(
-                    base, "download", "下载…", u=url, t=title,
+                    base, "download", "保存", u=url, t=title,
                 ),
             )
         else:
@@ -929,11 +1026,11 @@ def _sports_channel(handle, base, kodi, portal, params):
                 handle, base, title, "article",
                 thumb=thumb, plot=plot, date=date, u=url,
                 context=kodi.download_context(
-                    base, "dltext", "下载文本…", u=url, t=title,
+                    base, "dltext", "保存文本", u=url, t=title,
                 ),
             )
 
-    if page * page_size < total:
+    if _has_next(page, limit, total, len(items), portal.SPORTS_SEARCH_PAGE):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "sportsch",
                         c=name, page=page + 1, n=page_size,
                         plot="%s 共约 %d 条" % (name, total))
@@ -1102,7 +1199,7 @@ def _match(handle, base, kodi, portal, params):
             g=replay_guid,
             u=quote(replay_page, safe="") if replay_page else "",
             context=kodi.download_context(
-                base, "download", "下载…",
+                base, "download", "保存",
                 g=replay_guid, u=quote(replay_page, safe="") if replay_page else "",
                 t=shown,
             ),
@@ -1136,7 +1233,7 @@ def _match(handle, base, kodi, portal, params):
             g=guid,
             u=quote(page, safe="") if page else "",
             context=kodi.download_context(
-                base, "download", "下载…",
+                base, "download", "保存",
                 g=guid, u=quote(page, safe="") if page else "", t=it["title"],
             ),
         )
@@ -1210,7 +1307,7 @@ def _highlights(handle, base, kodi, portal):
             date=it.get("date") or "",
             g=it["guid"],
             context=kodi.download_context(
-                base, "download", "下载…", g=it["guid"], t=it["title"],
+                base, "download", "保存", g=it["guid"], t=it["title"],
             ),
         )
     kodi.end_directory(handle)
@@ -1227,7 +1324,9 @@ def _kandian(handle, base, kodi, pages):
 
 def _fourk(handle, base, kodi, portal, pages, params):
     page = int(params.get("page") or 1)
-    items, total = pages.fourk_albums(page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: pages.fourk_albums(api), page, limit,
+                         pages.FOURK_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "4K 专区暂时没有抓到内容，点这里重试", "fourk")
         kodi.end_directory(handle)
@@ -1236,7 +1335,8 @@ def _fourk(handle, base, kodi, portal, pages, params):
 
     _render_items(handle, base, kodi, items)
 
-    if page * pages.FOURK_PAGE_SIZE < min(total, 500):
+    if _has_next(page, limit, total, len(items), pages.FOURK_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 500):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "fourk",
                         page=page + 1, plot="4K 专区共 %d 部" % total)
     kodi.end_directory(handle)
@@ -1295,7 +1395,7 @@ def _column(handle, base, kodi, portal, params):
                           duration=it.get("duration") or "",
                           u=quote(it["url"], safe=""),
                           context=kodi.download_context(
-                              base, "download", "下载…",
+                              base, "download", "保存",
                               u=quote(it["url"], safe=""), t=it["title"],
                           ))
     kodi.end_directory(handle)
@@ -1321,7 +1421,9 @@ def _album(handle, base, kodi, portal, params):
         kodi.end_directory(handle)
         return
 
-    items, total = portal.album_items(album, page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: portal.album_items(album, api), page, limit,
+                         portal.ALBUM_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有分集，点这里重试", "album", id=album, page=page)
         kodi.end_directory(handle)
@@ -1329,7 +1431,8 @@ def _album(handle, base, kodi, portal, params):
 
     _album_rows(handle, base, kodi, items)
 
-    if page * portal.ALBUM_PAGE_SIZE < min(total, 1000):
+    if _has_next(page, limit, total, len(items), portal.ALBUM_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 1000):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "album",
                         id=album, page=page + 1, plot="共约 %d 集" % total)
     kodi.end_directory(handle)
@@ -1346,7 +1449,7 @@ def _album_rows(handle, base, kodi, items):
             g=it.get("guid") or "",
             u=quote(it["url"], safe=""),
             context=kodi.download_context(
-                base, "download", "下载…",
+                base, "download", "保存",
                 g=it.get("guid") or "", u=quote(it["url"], safe=""), t=it["title"],
             ),
         )
@@ -1360,7 +1463,9 @@ def _album_extra(handle, base, kodi, portal, params):
         kodi.end_directory(handle, succeeded=False)
         return
 
-    items, total = portal.album_extras(album, page)
+    limit = _page_limit(kodi)
+    items, total = _view(lambda api: portal.album_extras(album, api), page, limit,
+                         portal.ALBUM_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有看点，点这里重试", "albumx",
                         id=album, page=page)
@@ -1369,7 +1474,8 @@ def _album_extra(handle, base, kodi, portal, params):
 
     _album_rows(handle, base, kodi, items)
 
-    if page * portal.ALBUM_PAGE_SIZE < min(total, 1000):
+    if _has_next(page, limit, total, len(items), portal.ALBUM_PAGE_SIZE) \
+            and (not total or not limit or page * limit < 1000):
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "albumx",
                         id=album, page=page + 1, plot="共约 %d 条" % total)
     kodi.end_directory(handle)
@@ -1416,7 +1522,7 @@ def _search(handle, base, kodi, cctv, portal, params):
             duration=it.get("duration") or "",
             u=quote(it["url"], safe=""),
             context=kodi.download_context(
-                base, "download", "下载…",
+                base, "download", "保存",
                 u=quote(it["url"], safe=""), t=it["title"],
             ),
         )
@@ -1424,6 +1530,49 @@ def _search(handle, base, kodi, cctv, portal, params):
     if total > page * 20:
         kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "search",
                         q=keyword, page=page + 1)
+    kodi.end_directory(handle)
+
+
+def _search_article(handle, base, kodi, portal, params):
+    """只看文章：网页搜索的「文章」页签（2.2.0 beta1 从「选项」里进）。"""
+    keyword = (params.get("q") or "").strip()
+    if not keyword:
+        keyword = xbmcgui.Dialog().input("搜索文章", type=xbmcgui.INPUT_ALPHANUM)
+        if not keyword:
+            kodi.end_directory(handle, succeeded=False)
+            return
+
+    page = int(params.get("page") or 1)
+    try:
+        items, total = portal.search_articles(keyword, page)
+    except Exception as exc:
+        kodi.log("article search failed: %r" % exc, xbmc.LOGWARNING)
+        kodi.notify("搜索失败：%s" % exc, error=True)
+        kodi.end_directory(handle, succeeded=False)
+        return
+
+    if not items:
+        kodi.notify("没有找到「%s」的文章" % keyword, error=True)
+        kodi.end_directory(handle, succeeded=False)
+        return
+
+    kodi.log("article search %r p%d: %d 条，共约 %d" % (keyword, page, len(items), total))
+    for it in items:
+        url = quote(it["url"], safe="")
+        kodi.add_folder(
+            handle, base, it["title"], "article",
+            thumb=it.get("thumb") or None,
+            plot=it.get("plot") or it["title"],
+            date=it.get("date") or "",
+            u=url,
+            context=kodi.download_context(
+                base, "dltext", "保存文本", u=url, t=it["title"]
+            ),
+        )
+
+    if total > page * 20:
+        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1),
+                        "search_article", q=keyword, page=page + 1)
     kodi.end_directory(handle)
 
 
@@ -1604,7 +1753,7 @@ def _download_dir(addon, kodi, dl):
 
 
 def _download(handle, addon, kodi, dl, params):
-    """长按视频 →「下载…」：先弹清晰度列表，选一档就逐片存文件。
+    """长按视频 →「保存」：先弹清晰度列表，选一档就逐片存文件。
 
     2.2.0：去掉预览按钮和预览时长设置；列表里优先给 H5E 解密出来的
     720P / 1080P 高清档（明文梯只有 360P），最后一行仍是下载目录。
@@ -1703,7 +1852,7 @@ def _save_stream(addon, kodi, dl, stream, title, folder):
 
 
 def _dltext(handle, addon, kodi, portal, dl, params):
-    """长按文本 →「下载文本…」：把报道正文存成 .txt。"""
+    """长按文本 →「保存文本」：把报道正文存成 .txt。"""
     url = unquote(params.get("u") or "")
     title = params.get("t") or ""
     if not url:
