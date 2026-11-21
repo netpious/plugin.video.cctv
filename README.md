@@ -1,37 +1,26 @@
+<p align="center"><img src="plugin.video.cctv/icon.png" width="160" alt="logo"></p>
+
 # plugin.video.cctv
 
-**介绍**
+![license](https://img.shields.io/badge/license-MIT-green) ![stars](https://img.shields.io/github/stars/netpious/plugin.video.cctv?style=flat)
 
 在 Kodi 里浏览央视网（cctv.com）的电视节目、文章和电视直播。
 
-<p align="center"><img src="plugin.video.cctv/icon.png" width="160" alt="logo"></p>
+![video](images/001.png)
 
-**结构**
+![cctv live](images/002.png)
 
-```
-plugin.video.cctv
-├─ 首页
-   └─正在热播 精彩推荐 看点 片库 今日热门 收视TOP榜 经典影视剧场
-├─ 新闻         
-   └─ 要闻 国内 国际 经济 社会 法治 文娱 科技 生活 军事 快看 时政原创（联播+ 热解读 天天学习 央视快评 锋面 8点见 小央画话）
-      更多（人物 专题）
-├─ 视频          
-├─ 频道
-   └─地方 乡村振兴 生态 一带一路 央博 文化 旅游 科普 健康 乐龄 阅读 艺术 数智 5G 产业+
-├─ 体育          
-│   └─ 赛事      
-├─ 4K专区       
-├─ 栏目          
-├─ 片库
-   └─ 电视剧 动画片 纪录片 特别节目
-├─ 央视网剧      
-├─ 听音          
-├─ 熊猫         
-├─ 总台春晚      
-   └─ 完整回看 精彩回顾 开门迎春晚
-├─ 直播
-└─ 搜索          
-```
+![program](images/003.png)
+
+**链接**
+
+[央视网直播](https://tv.cctv.com/live/m/index.shtml)
+
+[央视网视频](https://v.cctv.com/)
+
+[央视网听音](https://tv.cctv.com/ty/m/index.shtml)
+
+[央视网搜索](https://tv.cctv.com/search/m/index.shtml)
 
 **Note**
 

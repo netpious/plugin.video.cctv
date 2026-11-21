@@ -125,6 +125,58 @@ def _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, context)
     return status, ctype, raw
 
 
+def fetch_headers(url, timeout=15, referer=None, headers=None):
+    """GET 只取响应头（登录后收 Set-Cookie 用）。"""
+    hdrs = dict(DEFAULT_HEADERS)
+    if referer:
+        hdrs["Referer"] = referer
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+        resp.read(1024)
+        return resp.headers
+
+
+def post_form(url, data, timeout=20, referer=None, headers=None, ua=None):
+    """表单 POST（登录用），返回 (status, bytes)。"""
+    import urllib.parse
+
+    hdrs = dict(DEFAULT_HEADERS)
+    hdrs["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+    hdrs["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    if ua:
+        hdrs["User-Agent"] = ua
+    if referer:
+        hdrs["Referer"] = referer
+    if headers:
+        hdrs.update(headers)
+
+    body = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+        return resp.status, resp.read(), resp.headers
+
+
+def delete_form(url, data, timeout=20, referer=None, headers=None, ua=None):
+    """表单 DELETE（取消收藏用），返回 (status, bytes, headers)。"""
+    import urllib.parse
+
+    hdrs = dict(DEFAULT_HEADERS)
+    hdrs["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+    hdrs["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    if ua:
+        hdrs["User-Agent"] = ua
+    if referer:
+        hdrs["Referer"] = referer
+    if headers:
+        hdrs.update(headers)
+    body = urllib.parse.urlencode(data).encode("utf-8") if data else None
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="DELETE")
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+        return resp.status, resp.read(), resp.headers
+
+
 def decode(raw, ctype=""):
     """央视网有的页面声明 UTF-8 实际是 GBK，先严格试 UTF-8，失败再回退。"""
     m = re.search(r"charset=([\w-]+)", ctype or "", re.I)

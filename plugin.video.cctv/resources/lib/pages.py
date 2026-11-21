@@ -557,6 +557,216 @@ TY_SECTIONS = (
     {"name": "电视剧", "pid": "PAGEucQhBjWzSNBxC93UoCAt201126"},
 )
 
+# 2.3.0 beta5：听音「类别」——来自 tv.cctv.com/ty/m/dianshiju/index.shtml 顶部的分类条，
+# 去掉「首页」「热听榜」。每类对应一个 PAGE id（「全部」是 CHAL 频道号，走另一个参数）。
+TY_CATEGORIES = (
+    ("全部", "chal", "CHAL1598506236114187"),
+    ("电视剧", "page", "PAGEucQhBjWzSNBxC93UoCAt201126"),
+    ("历史", "page", "PAGEZEFdcHJXJL3hm8LIMyIT200828"),
+    ("评书", "page", "PAGEfi6eQ0LXRP0F2MruYmat200828"),
+    ("解案", "page", "PAGESsDhkmHn8iz07VCAqiFS200828"),
+    ("健康", "page", "PAGEnUBwfxDuaWyigDcVbjvr200828"),
+    ("文化", "page", "PAGE75jPoBBgP47n5MSGzQsg201125"),
+    ("戏曲", "page", "PAGEdDkUJqtxc6TS2KEhOiGN201125"),
+    ("悬疑", "page", "PAGEdfca6fcG7STLxSjeBCmU201125"),
+    ("青少", "page", "PAGE9vqXqD5Hp4SvD4R9otsp210111"),
+    ("生活", "page", "PAGErtYLDCfcj7r23n4nfgT9201125"),
+    ("科技", "page", "PAGEZamOQ5sVg6l6adEN4zQi201125"),
+    ("警事", "page", "PAGEamuxeyNI770HqgG67FJc201125"),
+    ("情感", "page", "PAGEdGZ60r4byOcacJZz2T5w201125"),
+)
+TY_CAT_API = (
+    "https://api.cntv.cn/newVideoset/getVideoAlbumListByPageIdTvty"
+    "?serviceId=tvty&cid=%s&p=%d&n=%d"
+)
+# 听音首页那批图很多是模板自带的 228X228 占位图，直接丢掉，别让界面全是同一张图
+_TY_PLACEHOLDER = "228X228"
+
+
+def ty_cat_items(kind, key, page=1):
+    """听音类别列表。kind=page 走 id=(PAGE…)；kind=chal 走 cid=(CHAL…)。"""
+    if kind == "chal":
+        api = TY_CAT_API % (key, page, TY_PAGE_SIZE)
+    else:
+        api = TY_API % (key, page, TY_PAGE_SIZE)
+    data = _get_json(api, "https://tv.cctv.com/")["data"]
+    total = int(data.get("total") or 0)
+    items = []
+    for row in data.get("list") or []:
+        title = _clean(row.get("title"))
+        if not title:
+            continue
+        items.append({
+            "kind": "series",
+            "title": title,
+            "url": _norm_url(row.get("url")),
+            "album": (row.get("id") or "").strip(),
+            "thumb": _norm_url(row.get("image") or ""),
+            "plot": _clean(row.get("brief")),
+            "date": "",
+        })
+    return items, total
+
+
+# ---------------------------------------------------------------- 听音封面补全
+# 听音首页 / 专题页里的图很多是模板占位图（228X228、img710X400），
+# 类别接口的 image 偶尔也会缺。这里统一按「专辑页里那张真实封面」补一遍，
+# 结果写进 addon_data/ty_covers.json 缓存，第二次打开就不再请求。
+_COVER_CACHE = None
+_COVER_BAD = ("228x228", "img710x400", "img345x194", "bottomplan", "/logo", "favicon")
+
+
+def _cover_cache():
+    global _COVER_CACHE
+    if _COVER_CACHE is not None:
+        return _COVER_CACHE
+    data = {}
+    try:
+        import json
+        import os
+
+        import xbmcvfs
+
+        path = xbmcvfs.translatePath(
+            "special://profile/addon_data/plugin.video.cctv/ty_covers.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+    except Exception:
+        data = {}
+    _COVER_CACHE = data if isinstance(data, dict) else {}
+    return _COVER_CACHE
+
+
+def _save_cover_cache():
+    try:
+        import json
+        import os
+
+        import xbmcvfs
+
+        path = xbmcvfs.translatePath(
+            "special://profile/addon_data/plugin.video.cctv/ty_covers.json")
+        folder = os.path.dirname(path)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(_cover_cache(), f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _usable_cover(url):
+    low = (url or "").lower()
+    if not low.startswith(("http://", "https://")):
+        return ""
+    if any(bad in low for bad in _COVER_BAD):
+        return ""
+    return url
+
+
+def ty_cover(url):
+    """抓一个听音专辑页的真实封面（页面里 /photoAlbum/vms/standard/img/ 那张）。"""
+    if not url:
+        return ""
+    cache = _cover_cache()
+    if url in cache:
+        return cache[url]
+    cover = ""
+    try:
+        _, text = net.get_text(url, timeout=15, referer=TY_HOME_URL)
+    except Exception:
+        text = ""
+    if text:
+        m = re.search(
+            r'((?:https?:)?//[^"\'\s]*?/photoAlbum/vms/standard/img/[^"\'\s]+?\.(?:jpg|jpeg|png))',
+            text, re.I)
+        if m:
+            cover = _usable_cover(_norm_url(m.group(1)))
+        if not cover:
+            for img in re.findall(r'(?:data-src|src)="([^"]+\.(?:jpg|jpeg|png|webp))"', text, re.I):
+                cover = _usable_cover(_norm_url(img))
+                if cover:
+                    break
+    cache[url] = cover
+    return cover
+
+
+def fill_ty_covers(items, workers=8):
+    """给一批听音条目补封面（只处理缺封面/占位图的），返回同一批 items。"""
+    targets = [it for it in items if not _usable_cover(_norm_url(it.get("thumb") or "")) and it.get("url")]
+    if not targets:
+        return items
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            covers = list(pool.map(lambda it: ty_cover(it["url"]), targets))
+        for it, cover in zip(targets, covers):
+            if cover:
+                it["thumb"] = cover
+        _save_cover_cache()
+    except Exception:
+        pass
+    return items
+
+
+_GENERIC_OG = "1567091790028491"   # 央视网各页面的默认分享图
+
+
+def page_cover(url):
+    """通用：从任意详情页里找一张能用的封面（央博 / 艺术 / 文章等栏目用）。"""
+    if not url:
+        return ""
+    cache = _cover_cache()
+    key = "p:" + url
+    if key in cache:
+        return cache[key]
+    cover = ""
+    try:
+        _, text = net.get_text(url, timeout=15, referer="https://tv.cctv.com/")
+    except Exception:
+        text = ""
+    if text:
+        m = re.search(
+            r'((?:https?:)?//[^"\'\s]*?/photoAlbum/(?:vms/standard|page/performance)/img/[^"\'\s]+?\.(?:jpg|jpeg|png))',
+            text, re.I)
+        if m:
+            cover = _usable_cover(_norm_url(m.group(1)))
+        if not cover:
+            og = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"', text, re.I) \
+                or re.search(r'<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"', text, re.I)
+            if og and _GENERIC_OG not in og.group(1):
+                cover = _usable_cover(_norm_url(og.group(1)))
+        if not cover:
+            for img in re.findall(r'<img[^>]+(?:data-src|src)="([^"]+\.(?:jpg|jpeg|png))"', text, re.I):
+                if "/photoAlbum/" in img:
+                    cover = _usable_cover(_norm_url(img))
+                    if cover:
+                        break
+    cache[key] = cover
+    return cover
+
+
+def fill_item_covers(items, limit=40, workers=8):
+    """给一批条目（频道列表/搜索/文章列表）补缺的封面，最多 limit 个。"""
+    targets = [it for it in items
+               if it.get("url") and not _usable_cover(_norm_url(it.get("thumb") or ""))][:limit]
+    if not targets:
+        return items
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            covers = list(pool.map(lambda it: page_cover(it["url"]), targets))
+        for it, cover in zip(targets, covers):
+            if cover:
+                it["thumb"] = cover
+        _save_cover_cache()
+    except Exception:
+        pass
+    return items
+
 
 def ty_items(pid, page=1):
     """听音的专辑列表；点开是分集。返回 (items, total)。"""
@@ -622,6 +832,8 @@ def ty_home_sections():
             thumb = _img_of(inner) or _img_of(
                 part[max(0, am.start() - 600):am.start()], last=True
             )
+            if _TY_PLACEHOLDER in thumb:
+                thumb = ""
             items.append({"title": title, "url": url, "thumb": thumb,
                           "topic": topic})
             if len(items) >= 40:
@@ -657,14 +869,17 @@ def ty_topic_items(url):
         if len(title) < 2:
             continue
         seen.add(m.group(1))
+        thumb = _img_of(inner) or _img_of(
+            text[max(0, am.start() - 600):am.start()], last=True
+        )
+        if _TY_PLACEHOLDER in thumb:
+            thumb = ""
         items.append({
             "kind": "series",
             "title": title,
             "url": link,
             "album": m.group(1),
-            "thumb": _img_of(inner) or _img_of(
-                text[max(0, am.start() - 600):am.start()], last=True
-            ),
+            "thumb": thumb,
             "plot": title,
             "date": "",
         })

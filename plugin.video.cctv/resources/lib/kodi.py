@@ -7,10 +7,12 @@
   * 列表结束必须调用 endOfDirectory，否则界面会一直转圈
 """
 
+import re
 import sys
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcplugin
 import xbmcvfs
@@ -227,37 +229,51 @@ def end_directory(handle, succeeded=True):
     xbmcplugin.endOfDirectory(handle, succeeded=succeeded, cacheToDisc=False)
 
 
-def apply_context(item, context, base=None):
-    """长按（遥控器 OK 长按 / 右键 / 键盘 C）弹出的菜单项。
+def item_context(base, context):
+    """条目自己的动作 + 全局动作，合成一个列表。
 
-    context 是 [(标签, 插件地址)]；地址必须是 plugin:// 完整地址，
-    Kodi 只接受 RunPlugin(...) 这种内建命令包裹的形式。
-
-    2.2.2：把「保存」和全局项拼成一个列表，只调一次 addContextMenuItems ——
-    之前分两次调，菜单里只剩后一次的项，「保存」就丢了。
+    2.3.0 beta5：以前分两次 addContextMenuItems（第二次 replaceItems=False），
+    在很多 Kodi 版本上第二次调用会把第一次的项顶掉，结果「保存」永远不显示。
+    现在只调用一次，把两组菜单拼在一起。
     """
     items = [(label, "RunPlugin(%s)" % url) for label, url in (context or [])]
-    if base:
-        items.extend(global_context(base))
-    if not items:
-        return
+    items.extend((label, cmd) for label, cmd in global_context(base))
+    return items
+
+
+def apply_context(item, base, context):
+    if not context:
+        context = []
     try:
-        item.addContextMenuItems(items, replaceItems=False)
+        item.addContextMenuItems(item_context(base, context))
     except Exception as exc:
         log("addContextMenuItems failed: %r" % exc, xbmc.LOGWARNING)
 
 
-def global_context(base):
-    """每个条目「选项」菜单里都带的全局动作（2.2.0 beta2）。
+def logo_path(name):
+    """插件自带的台标（resources/logos/<name>），没有就返回空串。"""
+    if not name:
+        return ""
+    try:
+        import os
 
-    用 Container.Update 换掉当前容器的内容 —— 它在插件目录里最稳；
-    beta1 用的 ActivateWindow(Videos,…) 在部分皮肤/窗口下点了没反应。
+        base = xbmcvfs.translatePath(xbmcaddon.Addon(ADDON_ID).getAddonInfo("path"))
+        path = os.path.join(base, "resources", "logos", name)
+        return path if os.path.isfile(path) else ""
+    except Exception as exc:
+        log("logo_path failed: %r" % exc, xbmc.LOGWARNING)
+        return ""
+
+
+def global_context(base):
+    """每个条目「选项」菜单里都带的全局动作。
+
+    用 Container.Update 换掉当前容器的内容 —— 它在插件目录里最稳。
+    2.3.0 beta4：搜索视频/文章/音频合成了一个「搜索」，进去再选类型。
     """
     return [
         ("返回到根目录", "Container.Update(%s?mode=root,replace)" % base),
-        ("搜索文章", "Container.Update(%s?mode=search_article,replace)" % base),
-        ("搜索音频", "Container.Update(%s?mode=ty_search,replace)" % base),
-        ("搜索视频", "Container.Update(%s?mode=search,replace)" % base),
+        ("搜索", "Container.Update(%s?mode=search_hub,replace)" % base),
         ("刷新", "Container.Refresh"),
     ]
 
@@ -274,10 +290,10 @@ def add_folder(handle, base, label, mode, thumb=None, fanart=None, plot="", cont
     if art:
         item.setArt(art)
     info = {"title": label}
-    if plot:
-        info["plot"] = plot
+    # 没写简介时，左侧信息直接显示这个条目的名字
+    info["plot"] = plot or label
     item.setInfo("video", info)
-    apply_context(item, context, base)
+    apply_context(item, base, context)
     xbmcplugin.addDirectoryItem(handle, url, item, isFolder=True)
 
 
@@ -298,6 +314,39 @@ def _seconds(text):
         return int(float(text))
     except ValueError:
         return 0
+
+
+def _collect_actions(base, label, extra):
+    """长按菜单里的收藏项（只在登录后出现）。
+
+    source_id 取视频页/专辑页/文章页地址里的 ID 段；source_type：视频和音频专辑都是 1，
+    文章按网页收藏页里的取值用 3（这一项没有登录态无法实测，先按网页 JS 里的值来）。
+    """
+    try:
+        from . import account
+    except Exception:
+        return []
+    try:
+        if not account.is_logged_in():
+            return []
+    except Exception:
+        return []
+
+    url = unquote(extra.get("u") or "")
+    source_id, source_type = "", "1"
+    for prefix, stype in (("VIDE", "1"), ("VIDA", "1"), ("ARTI", "3")):
+        m = re.search(r"/(%s[0-9A-Za-z]+)\.shtml" % prefix, url)
+        if m:
+            source_id, source_type = m.group(1), stype
+            break
+    if not source_id:
+        return []
+    title = extra.get("t") or label
+    common = {"sid": source_id, "st": source_type, "t": title, "u": quote(url, safe="")}
+    return [
+        ("收藏到央视网", build_url(base, mode="collect", act="add", **common)),
+        ("取消收藏", build_url(base, mode="collect", act="del", **common)),
+    ]
 
 
 def add_playable(handle, base, label, mode, thumb=None, fanart=None, plot="", date="", duration="",
@@ -326,8 +375,70 @@ def add_playable(handle, base, label, mode, thumb=None, fanart=None, plot="", da
         info["duration"] = secs
     item.setInfo("video", info)
     item.setProperty("IsPlayable", "true")
-    apply_context(item, context, base)
+    merged = list(context or [])
+    merged.extend(_collect_actions(base, label, extra))
+    apply_context(item, base, merged)
     xbmcplugin.addDirectoryItem(handle, url, item, isFolder=False)
+
+
+def add_action(handle, base, label, mode, thumb=None, fanart=None, plot="", context=None, **extra):
+    """「点一下执行动作」的条目（登录、退出这类）。
+
+    Kodi 的目录项只有可播放项/文件夹能在点的时候回调插件；
+    这里用 IsPlayable 顶一下，处理函数最后必须 setResolvedUrl(False) 把播放取消掉，
+    否则会弹「播放失败」。它不会进文件夹 —— 用户看到的仍是同一个列表。
+    """
+    url = build_url(base, mode=mode, **extra)
+    item = xbmcgui.ListItem(label=label, offscreen=True)
+    art = {}
+    if thumb:
+        art["thumb"] = thumb
+        art["poster"] = thumb
+    if fanart:
+        art["fanart"] = fanart
+    if art:
+        item.setArt(art)
+    info = {"title": label}
+    if plot:
+        info["plot"] = plot
+    item.setInfo("video", info)
+    item.setProperty("IsPlayable", "true")
+    apply_context(item, base, context)
+    xbmcplugin.addDirectoryItem(handle, url, item, isFolder=False)
+
+
+def add_local(handle, path, label, thumb=None, plot="", duration="", base=""):
+    """本地文件条目（「保存」栏目里列已下载的视频用）。"""
+    item = xbmcgui.ListItem(label=label, path=path, offscreen=True)
+    art = {}
+    if thumb:
+        art["thumb"] = thumb
+        art["poster"] = thumb
+    if art:
+        item.setArt(art)
+    info = {"title": label}
+    if plot:
+        info["plot"] = plot
+    secs = _seconds(duration)
+    if secs:
+        info["duration"] = secs
+    item.setInfo("video", info)
+    item.setProperty("IsPlayable", "true")
+    # 本地文件也挂上全局长按菜单（返回到根目录 / 搜索 / 刷新）
+    try:
+        if base:
+            apply_context(item, base, [])
+    except Exception as exc:
+        log("add_local context failed: %r" % exc, xbmc.LOGWARNING)
+    xbmcplugin.addDirectoryItem(handle, path, item, isFolder=False)
+
+
+def cancel_playback(handle):
+    """可播放条目没有真正播放时取消掉，避免 Kodi 报「播放失败」。"""
+    try:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem(offscreen=True))
+    except Exception as exc:
+        log("setResolvedUrl(False) failed: %r" % exc, xbmc.LOGWARNING)
 
 
 def play(handle, stream_url, title="", thumb="", is_live=False):
