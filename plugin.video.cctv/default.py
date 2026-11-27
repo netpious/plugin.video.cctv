@@ -294,7 +294,6 @@ def _root(handle, base, kodi, account):
         ("推荐内容", "home", "home"),
         ("相关视频", "videos", "video"),
         ("频道", "chmenu", "folder-cctv"),
-        ("熊猫", "panda", "list"),
         ("正在直播", "live", "live"),
         ("电视节目", "columns", "monitor"),
         ("片库", "pianku", "pianku"),
@@ -306,12 +305,13 @@ def _root(handle, base, kodi, account):
 
 def _chmenu(handle, base, kodi):
     # 「频道」里放 6 个老频道 + beta4 新增的 4 个。
-    # 2.3.1：「熊猫」从频道菜单移到根目录，成为一个独立栏目。
+    # 2.3.1：「熊猫频道」直播从「正在直播」移到这里，熊猫栏目自己带一个直播入口。
     for label, mode, extra in (
         ("央视网剧", "netdrama", {}),
         ("听音", "tingyin", {}),
         ("体育", "sports", {}),
         ("4K专区", "fourk", {}),
+        ("熊猫", "panda", {}),
         ("总台春晚", "chunwan", {}),
         ("精品纪录", "special", {"k": "docu"}),
         ("微视频", "special", {"k": "wsp"}),
@@ -1116,6 +1116,10 @@ def _chunwan_board(handle, base, kodi, pages, params):
 
 # ---------------------------------------------------------------- 熊猫
 def _panda(handle, base, kodi, pages):
+    # 2.3.1：原「正在直播」里的熊猫频道直播移到熊猫栏目第一项
+    kodi.add_playable(handle, base, "熊猫频道", "liveplay", ch="ipanda",
+                      thumb=kodi.logo_path("ipanda.png") or None,
+                      plot="熊猫频道 · 正在直播")
     items, _total = pages.panda_section_items()
     if not items:
         items, _total = pages.panda_items()
@@ -2014,6 +2018,9 @@ def _search_article(handle, base, kodi, portal, params):
 # ---------------------------------------------------------------- 直播
 def _live(handle, base, kodi, cctv):
     for ch, name in cctv.LIVE_CHANNELS:
+        # 2.3.1：「熊猫频道」直播已经移到「频道 → 熊猫」栏目里，不再出现在这里
+        if ch == "ipanda":
+            continue
         kodi.add_playable(handle, base, name, "liveplay", ch=ch,
                           thumb=kodi.logo_path(ch + ".png"))
     kodi.end_directory(handle)
