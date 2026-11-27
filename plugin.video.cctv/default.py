@@ -98,6 +98,48 @@ def _has_next(page, limit, total, shown, native):
     return bool(limit) and shown >= limit
 
 
+# 2.3.1：一页到底。单栏最多拉这么多条，防止极端情况把内存/时间打爆。
+MAX_ALL_ITEMS = 1500
+
+
+def _view_all(fetch, native, max_items=MAX_ALL_ITEMS):
+    """一页到底：把接口所有页拼成一个列表。fetch(api_page) -> (items, total)。
+
+    先取第 1 页拿 total，其余页并发拉取（8 线程），最后按 max_items 截断。
+    没有 total 的接口退化为顺序翻页，遇到不足一页就停。
+    """
+    first, total = fetch(1)
+    items = list(first or [])
+    if not items:
+        return [], total
+    if not total:
+        page = 2
+        while len(items) < max_items:
+            part, _ = fetch(page)
+            if not part:
+                break
+            items.extend(part)
+            if len(part) < native:
+                break
+            page += 1
+        return items[:max_items], len(items)
+
+    page_count = min((total + native - 1) // native,
+                     (max_items + native - 1) // native)
+    if page_count > 1:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                parts = list(pool.map(lambda p: fetch(p)[0], range(2, page_count + 1)))
+            for part in parts:
+                if part:
+                    items.extend(part)
+        except Exception as exc:
+            xbmc.log("_view_all concurrent failed: %r" % exc, xbmc.LOGWARNING)
+    return items[:max_items], total
+
+
 def main():
     global _ADDON
     addon = xbmcaddon.Addon(ADDON_ID)
@@ -217,7 +259,7 @@ def main():
         elif mode == "live":
             _live(handle, base, kodi, cctv)
         elif mode == "play":
-            _play(handle, addon, kodi, cctv, params, account)
+            _play(handle, base, addon, kodi, cctv, params, account)
         elif mode == "liveplay":
             _live_play(handle, addon, kodi, cctv, params)
         elif mode == "download":
@@ -241,32 +283,35 @@ def main():
 def _root(handle, base, kodi, account):
     # 2.3.0 beta3：根目录 11 项 —— 登录态 / 观看历史 / 书签 / 保存 / 搜索 /
     # 推荐内容 / 相关视频 / 频道 / 正在直播 / 电视节目 / 片库。
-    # 每个条目的「栏目介绍」就是栏目名本身。
-    kodi.add_folder(handle, base, account.label(), "login", plot=account.label())
-    for label, mode in (
-        ("观看历史", "history"),
-        ("书签", "bookmark"),
-        ("保存", "saved"),
-        ("搜索", "search"),
-        ("推荐内容", "home"),
-        ("相关视频", "videos"),
-        ("频道", "chmenu"),
-        ("正在直播", "live"),
-        ("电视节目", "columns"),
-        ("片库", "pianku"),
+    # 2.3.1：每个栏目配一个自带图标（resources/menu/），左侧信息就是栏目名。
+    kodi.add_folder(handle, base, account.label(), "login",
+                    thumb=kodi.menu_icon("user"), plot=account.label())
+    for label, mode, icon in (
+        ("观看历史", "history", "history"),
+        ("书签", "bookmark", "bookmark"),
+        ("保存", "saved", "save"),
+        ("搜索", "search", "search"),
+        ("推荐内容", "home", "home"),
+        ("相关视频", "videos", "video"),
+        ("频道", "chmenu", "folder-cctv"),
+        ("熊猫", "panda", "list"),
+        ("正在直播", "live", "live"),
+        ("电视节目", "columns", "monitor"),
+        ("片库", "pianku", "pianku"),
     ):
-        kodi.add_folder(handle, base, label, mode, plot=label)
+        kodi.add_folder(handle, base, label, mode,
+                        thumb=kodi.menu_icon(icon), plot=label)
     kodi.end_directory(handle)
 
 
 def _chmenu(handle, base, kodi):
     # 「频道」里放 6 个老频道 + beta4 新增的 4 个。
+    # 2.3.1：「熊猫」从频道菜单移到根目录，成为一个独立栏目。
     for label, mode, extra in (
         ("央视网剧", "netdrama", {}),
         ("听音", "tingyin", {}),
         ("体育", "sports", {}),
         ("4K专区", "fourk", {}),
-        ("熊猫", "panda", {}),
         ("总台春晚", "chunwan", {}),
         ("精品纪录", "special", {"k": "docu"}),
         ("微视频", "special", {"k": "wsp"}),
@@ -383,12 +428,12 @@ def _history(handle, base, kodi, account, params):
     """
     kind = params.get("kind") or ""
     if not kind:
-        offline = len(account.offline_history())
         label_off = "离线"
+        # 2.3.1：离线 / 同步 各自带图标
         kodi.add_folder(handle, base, label_off, "history", kind="offline",
-                        plot=label_off)
+                        thumb=kodi.menu_icon("offline"), plot=label_off)
         kodi.add_folder(handle, base, "同步", "history", kind="sync",
-                        plot="同步")
+                        thumb=kodi.menu_icon("sync"), plot="同步")
         kodi.end_directory(handle)
         return
 
@@ -525,19 +570,23 @@ def _special(handle, base, kodi, special, params):
     limit = 20
     try:
         if kind == "wsp":
-            items = special.wsp_items(page)
-            _add_video_items(handle, base, kodi, items)
-            if items:
-                kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1),
-                                "special", k="wsp", page=page + 1)
+            # 2.3.1 一页到底：一次取多页（推荐流没有总数，拉到 150 条或不足一页为止）
+            items = []
+            page = 1
+            while len(items) < 150:
+                part = special.wsp_items(page, 50)
+                if not part:
+                    break
+                items.extend(part)
+                if len(part) < 50:
+                    break
+                page += 1
+            _add_video_items(handle, base, kodi, items[:150])
         elif kind == "wgs":
+            # 2.3.1 一页到底：微故事本来就是整页解析，全部显示
             items = special.wgs_items()
-            chunk = items[(page - 1) * limit: page * limit]
-            special.fill_missing(chunk)
-            _add_video_items(handle, base, kodi, chunk)
-            if page * limit < len(items):
-                kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1),
-                                "special", k="wgs", page=page + 1)
+            special.fill_missing(items)
+            _add_video_items(handle, base, kodi, items)
         elif kind == "food":
             # 首页横幅直接平铺在美食最前面（不再套一层「热播横幅」文件夹）
             for it in special.food_banners():
@@ -662,8 +711,9 @@ def _chlist(handle, base, kodi, pages, params):
         return
 
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: pages.channel_items(name, api), page, limit,
-                         pages.MIX_PAGE_SIZE)
+    # 2.3.1 一页到底：频道列表一次拉全部（最多 MAX_ALL_ITEMS），不再提示下一页
+    items, total = _view_all(lambda api: pages.channel_items(name, api),
+                             pages.MIX_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这个频道没抓到内容，点这里重试", "chlist",
                         c=name, page=page)
@@ -671,10 +721,6 @@ def _chlist(handle, base, kodi, pages, params):
         return
 
     _render_items(handle, base, kodi, items)
-    if _has_next(page, limit, total, len(items), pages.MIX_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 1000):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "chlist",
-                        c=name, page=page + 1, plot="%s 共约 %d 条" % (name, total))
     kodi.end_directory(handle)
 
 
@@ -769,8 +815,9 @@ def _pianku(handle, base, kodi, pages, params):
     cat = params.get("cat") or ""
     if not cat:
         for row in pages.PIANKU_CATS:
+            # 2.3.1：片库底下的文件夹左侧信息直接用名字本身
             kodi.add_folder(handle, base, row["name"], "pianku", cat=row["name"],
-                            plot="片库 · %s" % row["name"])
+                            plot=row["name"])
         kodi.end_directory(handle)
         return
 
@@ -814,8 +861,9 @@ def _pk_list(handle, base, kodi, pages, params):
     filters = {gkey: value} if gkey and value else {}
 
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: pages.pianku_items(cat, api, filters), page, limit,
-                         pages.PIANKU_PAGE_SIZE)
+    # 2.3.1 一页到底：片库一次拉全部（最多 MAX_ALL_ITEMS），不再提示下一页
+    items, total = _view_all(lambda api: pages.pianku_items(cat, api, filters),
+                             pages.PIANKU_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一类没有内容，点这里重试", "pklist",
                         cat=cat, g=gkey, v=value, page=page)
@@ -826,25 +874,20 @@ def _pk_list(handle, base, kodi, pages, params):
     label = "筛选"
     if filters:
         label = "筛选（当前：%s）" % value
-    kodi.add_folder(handle, base, label, "pksel", cat=cat,
-                    plot="按类别 / 地区 / 年份 / 字母筛选%s" % cat)
+    kodi.add_folder(handle, base, label, "pksel", cat=cat, plot=label)
 
     for it in items:
         row_label = it["title"]
         if it.get("label"):
             row_label = "%s（%s）" % (row_label, it["label"])
+        # 2.3.1：片库的文件夹左侧信息直接用名字本身
         kodi.add_folder(
             handle, base, row_label, "album",
             thumb=it.get("thumb") or None,
-            plot=it.get("plot") or it["title"],
+            plot=row_label,
             id=it.get("album") or "",
         )
 
-    if _has_next(page, limit, total, len(items), pages.PIANKU_PAGE_SIZE) \
-            and (not total or not limit or page * limit < pages.PIANKU_MAX):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "pklist",
-                        cat=cat, g=gkey, v=value, page=page + 1,
-                        plot="共约 %d 部" % total)
     kodi.end_directory(handle)
 
 
@@ -866,18 +909,15 @@ def _netdrama_eps(handle, base, kodi, pages, params):
         kodi.end_directory(handle, succeeded=False)
         return
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: pages.netdrama_episodes(mid, api), page, limit,
-                         pages.NETDRAMA_PAGE_SIZE)
+    # 2.3.1 一页到底：网剧分集一次拉全部
+    items, total = _view_all(lambda api: pages.netdrama_episodes(mid, api),
+                             pages.NETDRAMA_PAGE_SIZE)
     if not items:
         # 有的网剧还没上传分集（实测 20 部里有 1 部是空的），不要留假入口
         kodi.notify("这一部还没有可播放的分集")
         kodi.end_directory(handle, succeeded=False)
         return
     _render_items(handle, base, kodi, items)
-    if _has_next(page, limit, total, len(items), pages.NETDRAMA_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 500):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "netdrama_eps",
-                        mid=mid, page=page + 1, plot="共 %d 集" % total)
     kodi.end_directory(handle)
 
 
@@ -964,7 +1004,9 @@ def _tycatlist(handle, base, kodi, pages, params):
         kodi.end_directory(handle, succeeded=False)
         return
     try:
-        items, total = pages.ty_cat_items(kind, key, page)
+        # 2.3.1 一页到底：听音类别一次拉全部专辑
+        items, total = _view_all(
+            lambda api: pages.ty_cat_items(kind, key, api), pages.TY_PAGE_SIZE)
     except Exception as exc:
         kodi.log("tycat failed: %r" % exc, xbmc.LOGERROR)
         kodi.notify("加载失败：%s" % exc, error=True)
@@ -977,10 +1019,6 @@ def _tycatlist(handle, base, kodi, pages, params):
         return
     pages.fill_ty_covers(items)
     _render_items(handle, base, kodi, items)
-    limit = pages.TY_PAGE_SIZE
-    if total > page * limit:
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "tycatlist",
-                        c=key, k=kind, page=page + 1, plot="共约 %d 个专辑" % total)
     kodi.end_directory(handle)
 
 
@@ -995,7 +1033,8 @@ def _ty_search(handle, base, kodi, portal, params):
 
     page = int(params.get("page") or 1)
     try:
-        items, total = portal.search_audio(keyword, page)
+        # 2.3.1 一页到底：音频搜索结果一次拉全部
+        items, total = _view_all(lambda api: portal.search_audio(keyword, api), 20)
     except Exception as exc:
         kodi.log("audio search failed: %r" % exc, xbmc.LOGWARNING)
         kodi.notify("音频搜索失败：%s" % exc, error=True)
@@ -1029,9 +1068,6 @@ def _ty_search(handle, base, kodi, portal, params):
             ),
         )
 
-    if total > page * 20:
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "ty_search",
-                        q=keyword, page=page + 1, plot="共约 %d 条音频" % total)
     kodi.end_directory(handle)
 
 
@@ -1043,17 +1079,14 @@ def _tingyin_list(handle, base, kodi, pages, params):
         return
     sec = pages.TY_SECTIONS[idx]
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: pages.ty_items(sec["pid"], api), page, limit,
-                         pages.TY_PAGE_SIZE)
+    # 2.3.1 一页到底：听音板块列表一次拉全部
+    items, total = _view_all(lambda api: pages.ty_items(sec["pid"], api),
+                             pages.TY_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有内容，点这里重试", "tingyin_list", i=idx, page=page)
         kodi.end_directory(handle)
         return
     _render_items(handle, base, kodi, items)
-    if _has_next(page, limit, total, len(items), pages.TY_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 1000):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "tingyin_list",
-                        i=idx, page=page + 1, plot="共约 %d 个专辑" % total)
     kodi.end_directory(handle)
 
 
@@ -1271,8 +1304,9 @@ def _newslist(handle, base, kodi, portal, params):
     name = dict(portal.NEWS_COLUMNS).get(col, col)
 
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: portal.news_items(col, api), page, limit,
-                         portal.NEWS_PAGE_SIZE)
+    # 2.3.1 一页到底：新闻列表一次拉全部
+    items, total = _view_all(lambda api: portal.news_items(col, api),
+                             portal.NEWS_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一页没有内容，点这里重试", "newslist", c=col, page=page)
         kodi.end_directory(handle)
@@ -1290,10 +1324,6 @@ def _newslist(handle, base, kodi, portal, params):
             ),
         )
 
-    if _has_next(page, limit, total, len(items), portal.NEWS_PAGE_SIZE) \
-            and (not total or not limit or page * limit < portal.NEWS_MAX):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "newslist",
-                        c=col, page=page + 1, plot="%s 共约 %d 条" % (name, total))
     kodi.end_directory(handle)
 
 
@@ -1333,8 +1363,8 @@ def _article(handle, kodi, cctv, portal, params):
 def _videos(handle, base, kodi, portal, params):
     page = int(params.get("page") or 1)
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: portal.video_items(api), page, limit,
-                         portal.VIDEO_PAGE_SIZE)
+    # 2.3.1 一页到底：相关视频一次拉全部
+    items, total = _view_all(lambda api: portal.video_items(api), portal.VIDEO_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "这一页没有内容，点这里重试", "videos", page=page)
         kodi.end_directory(handle)
@@ -1355,9 +1385,6 @@ def _videos(handle, base, kodi, portal, params):
             ),
         )
 
-    if _has_next(page, limit, total, len(items), portal.VIDEO_PAGE_SIZE):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "videos",
-                        page=page + 1, plot="共约 %d 条视频" % total)
     kodi.end_directory(handle)
 
 
@@ -1414,9 +1441,10 @@ def _sports_channel(handle, base, kodi, portal, params):
     retry = dict(c=name, page=page)
     limit = _page_limit(kodi)
     try:
-        items, total = _view(
+        # 2.3.1 一页到底：体育频道一次拉全部
+        items, total = _view_all(
             lambda api: portal.sports_channel_items(name, api)[:2],
-            page, limit, portal.SPORTS_SEARCH_PAGE)
+            portal.SPORTS_SEARCH_PAGE)
         source = "cms"
 
     except Exception as exc:
@@ -1459,10 +1487,6 @@ def _sports_channel(handle, base, kodi, portal, params):
                 ),
             )
 
-    if _has_next(page, limit, total, len(items), portal.SPORTS_SEARCH_PAGE):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "sportsch",
-                        c=name, page=page + 1, n=page_size,
-                        plot="%s 共约 %d 条" % (name, total))
     kodi.end_directory(handle)
 
 
@@ -1754,20 +1778,16 @@ def _kandian(handle, base, kodi, pages):
 def _fourk(handle, base, kodi, portal, pages, params):
     page = int(params.get("page") or 1)
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: pages.fourk_albums(api), page, limit,
-                         pages.FOURK_PAGE_SIZE)
+    # 2.3.1 一页到底：4K 专区一次拉全部
+    items, total = _view_all(lambda api: pages.fourk_albums(api), pages.FOURK_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "4K 专区暂时没有抓到内容，点这里重试", "fourk")
         kodi.end_directory(handle)
         return
-    kodi.log("4k page %d: %d/%d" % (page, len(items), total))
+    kodi.log("4k: %d/%d" % (len(items), total))
 
     _render_items(handle, base, kodi, items)
 
-    if _has_next(page, limit, total, len(items), pages.FOURK_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 500):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "fourk",
-                        page=page + 1, plot="4K 专区共 %d 部" % total)
     kodi.end_directory(handle)
 
 
@@ -1851,21 +1871,15 @@ def _album(handle, base, kodi, portal, params):
         return
 
     limit = _page_limit(kodi)
-    # 没有「第 N 集/期」标记的分集（听音专辑就是这样）按升序排，第 1 期在最前面；
-    # 以前这里用默认的倒序，结果第 1 期被排到了最后。
-    items, total = _view(lambda api: portal.album_items(album, api, sort="asc"), page, limit,
-                         portal.ALBUM_PAGE_SIZE)
+    # 2.3.1 一页到底：专辑分集一次拉全部（听音专辑按升序，第 1 期在最前）
+    items, total = _view_all(
+        lambda api: portal.album_items(album, api, sort="asc"), portal.ALBUM_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有分集，点这里重试", "album", id=album, page=page)
         kodi.end_directory(handle)
         return
 
     _album_rows(handle, base, kodi, items)
-
-    if _has_next(page, limit, total, len(items), portal.ALBUM_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 1000):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "album",
-                        id=album, page=page + 1, plot="共约 %d 集" % total)
     kodi.end_directory(handle)
 
 
@@ -1895,8 +1909,9 @@ def _album_extra(handle, base, kodi, portal, params):
         return
 
     limit = _page_limit(kodi)
-    items, total = _view(lambda api: portal.album_extras(album, api), page, limit,
-                         portal.ALBUM_PAGE_SIZE)
+    # 2.3.1 一页到底：看点/花絮一次拉全部
+    items, total = _view_all(lambda api: portal.album_extras(album, api),
+                             portal.ALBUM_PAGE_SIZE)
     if not items:
         kodi.add_folder(handle, base, "没有看点，点这里重试", "albumx",
                         id=album, page=page)
@@ -1904,11 +1919,6 @@ def _album_extra(handle, base, kodi, portal, params):
         return
 
     _album_rows(handle, base, kodi, items)
-
-    if _has_next(page, limit, total, len(items), portal.ALBUM_PAGE_SIZE) \
-            and (not total or not limit or page * limit < 1000):
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "albumx",
-                        id=album, page=page + 1, plot="共约 %d 条" % total)
     kodi.end_directory(handle)
 
 
@@ -1922,9 +1932,9 @@ def _search(handle, base, kodi, cctv, portal, params):
             kodi.end_directory(handle, succeeded=False)
             return
 
-    page = int(params.get("page") or 1)
+    # 2.3.1 一页到底：搜索结果一次拉全部
     try:
-        items, total = portal.search_grouped(keyword, page)
+        items, total = _view_all(lambda api: portal.search_grouped(keyword, api), 20)
     except Exception as exc:
         kodi.log("search failed: %r" % exc, xbmc.LOGWARNING)
         kodi.notify("搜索失败：%s" % exc, error=True)
@@ -1958,9 +1968,6 @@ def _search(handle, base, kodi, cctv, portal, params):
             ),
         )
 
-    if total > page * 20:
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1), "search",
-                        q=keyword, page=page + 1)
     kodi.end_directory(handle)
 
 
@@ -1973,9 +1980,9 @@ def _search_article(handle, base, kodi, portal, params):
             kodi.end_directory(handle, succeeded=False)
             return
 
-    page = int(params.get("page") or 1)
+    # 2.3.1 一页到底：文章搜索结果一次拉全部
     try:
-        items, total = portal.search_articles(keyword, page)
+        items, total = _view_all(lambda api: portal.search_articles(keyword, api), 20)
     except Exception as exc:
         kodi.log("article search failed: %r" % exc, xbmc.LOGWARNING)
         kodi.notify("搜索失败：%s" % exc, error=True)
@@ -1987,7 +1994,7 @@ def _search_article(handle, base, kodi, portal, params):
         kodi.end_directory(handle, succeeded=False)
         return
 
-    kodi.log("article search %r p%d: %d 条，共约 %d" % (keyword, page, len(items), total))
+    kodi.log("article search %r: %d 条，共约 %d" % (keyword, len(items), total))
     for it in items:
         url = quote(it["url"], safe="")
         kodi.add_folder(
@@ -2001,9 +2008,6 @@ def _search_article(handle, base, kodi, portal, params):
             ),
         )
 
-    if total > page * 20:
-        kodi.add_folder(handle, base, "下一页（第 %d 页）" % (page + 1),
-                        "search_article", q=keyword, page=page + 1)
     kodi.end_directory(handle)
 
 
@@ -2108,7 +2112,34 @@ def _hold_playback(player, kodi, api=None, monitor=None, grace=20.0):
     return last_position[0]
 
 
-def _play(handle, addon, kodi, cctv, params, account=None):
+def _playlist_entries(base, album, current_guid, kodi):
+    """取整部剧集的分集，转成 Kodi 播放列表项：[(label, plugin_url, thumb)]。"""
+    from resources.lib import portal
+
+    eps, _total = _view_all(
+        lambda api: portal.album_items(album, api, sort="asc"), portal.ALBUM_PAGE_SIZE)
+    # 剧集里常混着「看点/预告」，有「第 N 集」正片时只放正片
+    official = [e for e in eps if portal.is_episode(e.get("title") or "")]
+    if official:
+        eps = official
+    entries = []
+    start = -1
+    for ep in eps:
+        title = ep.get("title") or "未命名"
+        g = ep.get("guid") or ""
+        u = quote(ep.get("url") or "", safe="")
+        if not g and not u:
+            continue
+        plugin_url = kodi.build_url(base, mode="play", g=g, u=u, pl="1")
+        entries.append((title, plugin_url, ep.get("thumb") or ""))
+        if current_guid and g == current_guid:
+            start = len(entries) - 1
+    if start < 0:
+        start = 0
+    return entries, start
+
+
+def _play(handle, base, addon, kodi, cctv, params, account=None):
     guid = params.get("g") or ""
     page_url = unquote(params.get("u") or "")
 
@@ -2121,6 +2152,22 @@ def _play(handle, addon, kodi, cctv, params, account=None):
         except Exception as exc:
             kodi.fail(handle, "解析失败：%s" % exc)
             return
+
+    # 2.3.1：如果这个视频属于一部剧集（页面里的 VIDA 专辑），
+    # 先把整部剧集塞进 Kodi 播放列表，这样播放设置里能看到「播放列表」并选集。
+    # pl=1 表示这次是播放列表回调进来的，不要再套一层。
+    if not params.get("pl"):
+        try:
+            from resources.lib import portal
+
+            album = params.get("a") or (portal.album_id_of(page_url) if page_url else "")
+            if album:
+                entries, start = _playlist_entries(base, album, guid, kodi)
+                if len(entries) > 1:
+                    if kodi.play_playlist(entries, start):
+                        return
+        except Exception as exc:
+            kodi.log("playlist failed, fallback to single: %r" % exc, xbmc.LOGWARNING)
 
     try:
         info = cctv.video_info(guid, referer=page_url or None)

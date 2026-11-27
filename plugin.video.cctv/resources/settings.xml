@@ -13,18 +13,14 @@
 <settings>
   <category label="常规">
     <setting id="show_thumb" type="bool" label="显示缩略图" default="true"/>
+    <setting id="h5e_play" type="bool"
+             label="高画质播放" default="true"/>
+    <setting id="download_path" type="folder" label="下载目录"
+             default="special://profile/addon_data/plugin.video.cctv/downloads/"
+             option="writeable"/>
   </category>
   <category label="账户">
     <setting id="logout" type="action" label="退出登录"
              action="RunPlugin(plugin://plugin.video.cctv/?mode=logout)"/>
-  </category>
-  <category label="播放">
-    <setting id="h5e_play" type="bool"
-             label="高画质播放" default="true"/>
-  </category>
-  <category label="下载">
-    <setting id="download_path" type="folder" label="下载目录"
-             default="special://profile/addon_data/plugin.video.cctv/downloads/"
-             option="writeable"/>
   </category>
 </settings>

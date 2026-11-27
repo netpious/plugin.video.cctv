@@ -265,6 +265,21 @@ def logo_path(name):
         return ""
 
 
+def menu_icon(name):
+    """插件自带的菜单图标（resources/menu/icon-<name>.png），没有就返回空串。"""
+    if not name:
+        return ""
+    try:
+        import os
+
+        base = xbmcvfs.translatePath(xbmcaddon.Addon(ADDON_ID).getAddonInfo("path"))
+        path = os.path.join(base, "resources", "menu", "icon-%s.png" % name)
+        return path if os.path.isfile(path) else ""
+    except Exception as exc:
+        log("menu_icon failed: %r" % exc, xbmc.LOGWARNING)
+        return ""
+
+
 def global_context(base):
     """每个条目「选项」菜单里都带的全局动作。
 
@@ -456,6 +471,33 @@ def play(handle, stream_url, title="", thumb="", is_live=False):
     if is_live:
         item.setMimeType("application/vnd.apple.mpegurl")
     xbmcplugin.setResolvedUrl(handle, True, item)
+
+
+def play_playlist(entries, start_index=0):
+    """把整部剧集（分集）塞进 Kodi 播放列表再起播。
+
+    entries = [(label, plugin_url, thumb)]，plugin_url 是 mode=play&pl=1，
+    Kodi 播到哪一集就回调插件解析哪一集。播放界面的「播放列表」里能看到全部选集。
+    返回 True 表示已经开始播放列表。
+    """
+    if not entries:
+        return False
+    try:
+        playlist = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
+        playlist.clear()
+        for label, url, thumb in entries:
+            item = xbmcgui.ListItem(label=label, offscreen=True)
+            item.setInfo("video", {"title": label})
+            if thumb:
+                item.setArt({"thumb": thumb})
+            playlist.add(url, item)
+        if start_index < 0 or start_index >= len(entries):
+            start_index = 0
+        xbmc.Player().play(playlist, startpos=start_index)
+        return True
+    except Exception as exc:
+        log("play_playlist failed: %r" % exc, xbmc.LOGWARNING)
+        return False
 
 
 def text_viewer(heading, text):
