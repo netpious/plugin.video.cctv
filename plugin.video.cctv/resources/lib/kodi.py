@@ -284,7 +284,6 @@ def global_context(base):
     """每个条目「选项」菜单里都带的全局动作。
 
     用 Container.Update 换掉当前容器的内容 —— 它在插件目录里最稳。
-    2.3.0 beta4：搜索视频/文章/音频合成了一个「搜索」，进去再选类型。
     """
     return [
         ("返回到根目录", "Container.Update(%s?mode=root,replace)" % base),

@@ -50,7 +50,9 @@ PIANKU_API = (
     "https://api.cntv.cn/List/getVideoAlbumList"
     "?channelid=%s&serviceId=tvcctv&fc=%s&n=%d&topv=1&p=%d"
 )
-PIANKU_PAGE_SIZE = 20
+# 2.3.4：接口实测支持 n=100，从 20 提到 100。
+# 片库电视剧 1160 条的请求数从 58 个降到 12 个，纪录片 2000 条从 100 降到 20。
+PIANKU_PAGE_SIZE = 100
 PIANKU_MAX = 2000
 
 # 片库四个大类的 channelid（来自 tv.cctv.com/yxg/m/<类>/ 页面里的 var cid）
@@ -745,8 +747,12 @@ def page_cover(url):
     return cover
 
 
-def fill_item_covers(items, limit=40, workers=8):
-    """给一批条目（频道列表/搜索/文章列表）补缺的封面，最多 limit 个。"""
+def fill_item_covers(items, limit=24, workers=16):
+    """给一批条目（频道列表/搜索/文章列表）补缺的封面，最多 limit 个。
+
+    2.3.4：补封面是纯 IO 等待，线程 8→16 能明显缩短；上限 40→24，
+    超出的条目留空。列表里补图是「锦上添花」，为它多花一倍时间不值。
+    """
     targets = [it for it in items
                if it.get("url") and not _usable_cover(_norm_url(it.get("thumb") or ""))][:limit]
     if not targets:
@@ -988,14 +994,20 @@ def panda_section_items(per_section=10):
 TV_HOME = "https://tv.cctv.com/"
 
 
-def _tv_home():
+def tv_home_text():
+    """抓一次首页 HTML，给 home_hotplay / home_picks 共用。
+
+    2.3.4：以前这三个函数各自调一次 net.get_text(TV_HOME)，一份 HTML 抓三遍，
+    光这一项就多花 1.5 秒。
+    """
     _, text = net.get_text(TV_HOME, timeout=25, referer=TV_HOME)
-    return text
+    return text or ""
 
 
-def home_hotplay(limit=40):
+def home_hotplay(limit=40, text=None):
     """首页右侧「正在热播」：《纸韵千年》《绿野“鲜”踪》《六朝》…"""
-    text = _tv_home()
+    if text is None:
+        text = tv_home_text()
     i = text.find('id="hotPlay"')
     if i < 0:
         return []
@@ -1017,9 +1029,10 @@ def home_hotplay(limit=40):
     return items
 
 
-def home_picks(limit=30):
+def home_picks(limit=30, text=None):
     """首页右侧「精彩推荐」：那一排 bullet 小标题。"""
-    text = _tv_home()
+    if text is None:
+        text = tv_home_text()
     items = []
     for m in re.finditer(
         r'class="bullet"><a href="([^"]+)"[^>]*>([^<]+)</a>', text

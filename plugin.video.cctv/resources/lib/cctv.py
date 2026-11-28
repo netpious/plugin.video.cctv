@@ -208,12 +208,19 @@ def _poster_of(page_url, timeout=8):
     return abs_url(m.group(1)) if m else ""
 
 
-def fill_thumbs(items, workers=8, deadline=6.0):
-    """首页是新闻门户，多数条目没有配图；并发去视频页补封面，超时就放弃。"""
+def fill_thumbs(items, workers=16, deadline=6.0, limit=20):
+    """首页是新闻门户，多数条目没有配图；并发去视频页补封面，超时就放弃。
+
+    2.3.4：
+      * 只补前 limit 条（默认 20）。首页平铺最多 80 条，用户滚到后面时
+        早就不在乎图了，全补等于白花 40 多个请求。
+      * 线程从 8 提到 16：补图是纯 IO 等待，连接复用后单线程很闲，
+        加线程能明显缩短总时间。
+    """
     from concurrent.futures import TimeoutError as FutureTimeout
     from concurrent.futures import as_completed
 
-    targets = [i for i in items if not i.get("thumb")]
+    targets = [i for i in items if not i.get("thumb")][:limit]
     if not targets:
         return items
 
@@ -282,10 +289,11 @@ def _plain_base(info):
     return _dl.strip_maxbr(url)
 
 
-def clear_ladders(info):
+def clear_ladders(info, for_play=False):
     """这个视频所有「明文、真能解码」的档位，从高到低。
 
     这是播放和下载共用的唯一入口 —— 加密档位会被 SPS 解析这一步天然筛掉。
+    for_play=True 时跳过必然 404 的高档位（见 download.PLAY_TIERS），起播更快。
     """
     from . import download as _dl
 
@@ -293,7 +301,7 @@ def clear_ladders(info):
     if not base:
         raise ValueError("没有拿到 HLS 地址")
 
-    rows = _dl.clear_ladders(base)
+    rows = _dl.clear_ladders(base, tiers=_dl.PLAY_TIERS if for_play else None)
     if rows:
         return rows
 

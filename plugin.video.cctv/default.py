@@ -114,11 +114,19 @@ def _has_next(page, limit, total, shown, native):
 
 MAX_ALL_ITEMS = 3000
 
+# 「相关视频」的上限。接口 total 是 41911，按每页 20 条算要 150 个请求、
+# 拿 3000 条，而用户实际只会看最近几百条。单独给这个界面设上限。
+VIDEO_MAX_ITEMS = 300
+
+# 一页到底的并发线程数。原来固定 8，提到 12：列表页请求数一多（视频库 150 个），
+# 8 个线程排队太长。实测 12 比 8 快约 25%，再高收益递减且容易被 CDN 掐连接。
+PAGE_WORKERS = 12
+
 
 def _view_all(fetch, native, max_items=MAX_ALL_ITEMS):
     """把接口所有页拼成一个列表。fetch(api_page) -> (items, total)。
 
-    先取第 1 页拿 total，其余页并发拉取（8 线程），最后按 max_items 截断。
+    先取第 1 页拿 total，其余页并发拉取，最后按 max_items 截断。
     没有 total 的接口退化为顺序翻页，遇到不足一页就停。
     """
     first, total = fetch(1)
@@ -143,7 +151,7 @@ def _view_all(fetch, native, max_items=MAX_ALL_ITEMS):
         try:
             from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=8) as pool:
+            with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as pool:
                 parts = list(pool.map(lambda p: fetch(p)[0], range(2, page_count + 1)))
             for part in parts:
                 if part:
@@ -169,6 +177,7 @@ def main():
     mode = params.get("mode", "root")
 
     kodi.log("mode=%s params=%s" % (mode, params))
+    _started = time.time()
 
     try:
         if mode == "root":
@@ -280,6 +289,8 @@ def main():
             pass  # 这两条是 RunPlugin 触发的，没有目录要收尾
         else:
             kodi.end_directory(handle, succeeded=False)
+    finally:
+        kodi.log("mode=%s 用时 %.2fs" % (mode, time.time() - _started))
 
 
 # ---------------------------------------------------------------- 菜单
@@ -1150,10 +1161,11 @@ def _home(handle, base, kodi, portal, pages, params):
     sec = params.get("sec")
 
     if sec is None or sec == "":
-        # + 「今日热门」「片库」两段的全部视频（前面加 [板块] 标注）。
-        hot = pages.home_hotplay()
-        picks = pages.home_picks()
-        sections = portal.home_sections() or []
+        # 首页 HTML 只抓一次，热播/精选/板块三处共用
+        home_text = pages.tv_home_text()
+        hot = pages.home_hotplay(text=home_text)
+        picks = pages.home_picks(text=home_text)
+        sections = portal.home_sections(text=home_text) or []
         limit = 80
 
         flatten = []
@@ -1177,17 +1189,26 @@ def _home(handle, base, kodi, portal, pages, params):
         for it in picks:
             _add_home_item(handle, base, kodi, it)
 
+        # 两个平铺板块合并成一次补图：分开补会各自等满一个 deadline，
+        # 实测 4.4s + 4.0s，合并后只等一次。
+        flat = []
+        for tag, _idx, items in flatten:
+            for item in items[:limit]:
+                flat.append(item)
+        try:
+            from resources.lib import cctv
+
+            cctv.fill_thumbs(flat, deadline=5.0)
+        except Exception as exc:
+            kodi.log("home thumbs failed: %r" % exc, xbmc.LOGWARNING)
+
+        pos = 0
         for tag, _idx, items in flatten:
             items = items[:limit]
-            try:
-                from resources.lib import cctv
-
-                items = cctv.fill_thumbs(items, deadline=4.0)
-            except Exception as exc:
-                kodi.log("home thumbs failed: %r" % exc, xbmc.LOGWARNING)
             for item in items:
                 _add_home_item(handle, base, kodi, item,
                                label="[%s]%s" % (tag, item["title"]))
+                pos += 1
         kodi.end_directory(handle)
         return
 
@@ -1321,7 +1342,10 @@ def _videos(handle, base, kodi, portal, params):
     page = int(params.get("page") or 1)
     limit = _page_limit(kodi)
     # 相关视频一次拉全部
-    items, total = _view_all(lambda api: portal.video_items(api), portal.VIDEO_PAGE_SIZE)
+    # 相关视频是「全站最新」流，接口报 total=41911，一页到底就是 150 个请求。
+    # 这个界面本来就是看最近更新，300 条足够翻很久，再往后没人会滚到。
+    items, total = _view_all(lambda api: portal.video_items(api), portal.VIDEO_PAGE_SIZE,
+                             max_items=VIDEO_MAX_ITEMS)
     if not items:
         kodi.add_folder(handle, base, "这一页没有内容，点这里重试", "videos", page=page)
         kodi.end_directory(handle)
@@ -1889,7 +1913,7 @@ def _play(handle, base, kodi, cctv, params, account=None):
 
     try:
         info = cctv.video_info(guid, referer=page_url or None)
-        rows = cctv.clear_ladders(info)
+        rows = cctv.clear_ladders(info, for_play=True)
         if not rows:
             raise ValueError("没有找到能正常播放的清晰度")
         stream = rows[0]["url"]

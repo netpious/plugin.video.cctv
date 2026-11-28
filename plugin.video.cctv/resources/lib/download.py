@@ -549,6 +549,10 @@ def download_article(title, body, source, dest):
 # 另外 master 里的 maxbr 会把高档位裁掉（maxbr=2048 时连 720p 都不报），
 # 所以要自己按档位号拼地址，并把分片开头的 SPS 真正解出来，确认分辨率。
 CLEAR_TIERS = (8000, 6000, 4000, 2000, 1200, 850, 450)
+# 明文梯实测最高就到 2000（720P 附近）。8000/6000/4000 在所有测过的视频上
+# 一律 404，播放时先跳过它们，省掉 3 个必然失败的请求；
+# 下载功能仍然探全部档位，避免漏掉个别真有高档的片源。
+PLAY_TIERS = (2000, 1200, 850, 450)
 TIER_BITRATE = {
     8000: 8192000,
     6000: 6144000,
@@ -735,12 +739,18 @@ def sps_of(raw):
         pos = header + 1
 
 
-def probe_tier(base_url, tier):
+def probe_tier(base_url, tier, alt_hosts=False):
     """探一个档位：播放列表 → 分片开头 → SPS 分辨率 + 分片总大小。
 
     不存在（404/403）或不是明文可解的流，返回 None。
+
+    2.3.4：默认只探主 host。实测央视的档位地址在主 host 上就是通的，
+    以前每个档位都先试主 host、再试 3 个备用 host，不存在的档位要白跑
+    4 个请求，7 个档位里光这部分就多花 1 秒多。备用 host 改成显式开启，
+    只给「主 host 全都探不到」的极端情况兜底。
     """
-    for host in (None,) + CLEAR_ALT_HOSTS:
+    hosts = (None,) + (CLEAR_ALT_HOSTS if alt_hosts else ())
+    for host in hosts:
         url = tier_url(base_url, tier, host)
         try:
             _, text = net.get_text(url, timeout=10, referer=REFERER)
@@ -793,19 +803,30 @@ def probe_tier(base_url, tier):
     return None
 
 
-def clear_ladders(base_url, workers=7):
+def clear_ladders(base_url, workers=7, tiers=None):
     """把某个视频所有「明文可播」的档位找出来，从高到低排好。
 
     判定：
       * 分片开头能解出 SPS（分辨率）→ 明文，可播；
       * 与更低档位分片字节数完全相同 → CDN 用低档顶的假档位，丢掉。
+
+    tiers 默认探全部档位（下载用）；播放时传 PLAY_TIERS 跳过必然 404 的高档。
+    2.3.4：并行探测，且一次探不到才启用备用 host。
     """
     from concurrent.futures import ThreadPoolExecutor
 
     if not base_url:
         return []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        rows = [r for r in pool.map(lambda t: probe_tier(base_url, t), CLEAR_TIERS) if r]
+    wanted = tiers or CLEAR_TIERS
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(wanted))) as pool:
+        rows = [r for r in pool.map(lambda t: probe_tier(base_url, t), wanted) if r]
+
+    # 一个档位都没探到，说明主 host 这条路有问题，再用备用 host 试一轮
+    if not rows:
+        with ThreadPoolExecutor(max_workers=min(workers, len(wanted))) as pool:
+            rows = [r for r in pool.map(lambda t: probe_tier(base_url, t, alt_hosts=True),
+                                        wanted) if r]
 
     rows.sort(key=lambda r: r["tier"])
     seen = set()

@@ -39,9 +39,11 @@ VIDEO_PAGE_SIZE = 20
 
 COLUMN_API = (
     "https://api.cntv.cn/lanmu/columnSearch"
-    "?fl=&fc=&cid=&p=%d&n=40&serviceId=tvcctv&t=jsonp&cb=Callback"
+    "?fl=&fc=&cid=&p=%d&n=100&serviceId=tvcctv&t=jsonp&cb=Callback"
 )
-COLUMN_PAGE_SIZE = 40
+# 2.3.4：接口实测支持 n=100（n=200 仍只返回 100），从 40 提到 100，
+# 348 个栏目的请求数从 9 个降到 4 个。
+COLUMN_PAGE_SIZE = 100
 
 ALBUM_API = (
     "https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew"
@@ -572,17 +574,19 @@ def _module_marks(text):
     return marks
 
 
-def home_sections(url=HOME_URL):
+def home_sections(url=HOME_URL, text=None):
     """tv.cctv.com 首页按它自己的板块分组。
 
     实测板块：今日热门 / 直播导视 / 片库 / 看点 / 收视TOP榜 / 经典影视剧场。
+    text 传进来就直接用，不再抓一遍（2.3.4：首页三处共用同一份 HTML）。
     """
     from . import cctv as _cctv
 
-    try:
-        _, text = net.get_text(url, timeout=20)
-    except Exception:
-        _, text = net.get_text(HOME_FALLBACK, timeout=20)
+    if not text:
+        try:
+            _, text = net.get_text(url, timeout=20)
+        except Exception:
+            _, text = net.get_text(HOME_FALLBACK, timeout=20)
 
     marks = _module_marks(text)
     if not marks:
