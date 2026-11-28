@@ -20,6 +20,9 @@ _INSECURE_CONTEXT = None
 # 已经确认证书有问题的主机（只对显式允许兜底的调用生效）
 _BAD_CERT_HOSTS = set()
 
+# 必须用「不带 UA」的裸请求才返回数据。命中时 _fetch 会自动降级重试。
+_BARE_UA_HOSTS = set()
+
 
 def _ssl_context():
     global _SSL_CONTEXT
@@ -91,7 +94,11 @@ def fetch(url, timeout=15, referer=None, headers=None, ua=None, allow_insecure_f
 
 def _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, context):
     hdrs = dict(DEFAULT_HEADERS)
-    if ua:
+    # 必须真正不带 UA 才返回数据。DEFAULT_HEADERS 里默认就有 UA，
+    # 所以「裸请求」必须显式删掉它，只清 ua 参数是不够的。
+    if _needs_bare_ua(url):
+        hdrs.pop("User-Agent", None)
+    elif ua:
         hdrs["User-Agent"] = ua
     if referer:
         hdrs["Referer"] = referer
@@ -105,6 +112,17 @@ def _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, context)
             status = resp.status
             ctype = resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
+        # 302 自循环：把这个主机记成「必须裸请求」，然后重试一次。
+        if exc.code in (301, 302, 303, 307, 308):
+            try:
+                from urllib.parse import urlsplit
+
+                host = (urlsplit(url).hostname or "").lower()
+            except Exception:
+                host = ""
+            if host and host not in _BARE_UA_HOSTS:
+                _BARE_UA_HOSTS.add(host)
+                return _fetch(url, timeout, referer, headers, ua, False, context)
         raise HttpError(exc.code, url)
     except urllib.error.URLError as exc:
         if allow_insecure_fallback and _is_cert_error(exc):
@@ -123,6 +141,17 @@ def _fetch(url, timeout, referer, headers, ua, allow_insecure_fallback, context)
         except OSError:
             pass
     return status, ctype, raw
+
+
+def _needs_bare_ua(url):
+    """这些主机带浏览器 UA 会被 302 自循环，必须用「裸请求」（不带 UA）。"""
+    try:
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _BARE_UA_HOSTS
 
 
 def fetch_headers(url, timeout=15, referer=None, headers=None):
@@ -175,6 +204,33 @@ def delete_form(url, data, timeout=20, referer=None, headers=None, ua=None):
     req = urllib.request.Request(url, data=body, headers=hdrs, method="DELETE")
     with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         return resp.status, resp.read(), resp.headers
+
+
+def request_json(url, method="GET", data=None, timeout=20, referer=None, headers=None, ua=None):
+    """通用请求（支持 PUT/DELETE/GET/POST），返回原始 bytes。
+
+    2.3.2：央视网的收藏接口要 PUT（收藏）和 DELETE（取消），
+    post_form/delete_form 不够用，这里统一走一个。
+    """
+    import urllib.parse
+
+    hdrs = dict(DEFAULT_HEADERS)
+    hdrs["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    if ua:
+        hdrs["User-Agent"] = ua
+    if referer:
+        hdrs["Referer"] = referer
+    if headers:
+        hdrs.update(headers)
+
+    method = (method or "GET").upper()
+    body = None
+    if data and method in ("POST", "PUT", "PATCH", "DELETE"):
+        hdrs["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        body = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+        return resp.read()
 
 
 def decode(raw, ctype=""):

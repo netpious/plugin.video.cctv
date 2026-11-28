@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- 这是 Kodi 的「旧版」设置定义（<settings> 不带 version），类型名必须是
-     旧版那一套：text / number / bool / folder / select / enum / slider …
+     旧版那一套：text / number / bool / folder / select / enum / slider / action / lsep。
 
      踩过的坑（2026-10-31 的 kodi.log 实锤）：
        * 写 type="integer"  → failed to parse old setting definition … of type "integer"
@@ -9,18 +9,38 @@
      结果是整份设置都读不出来：getSettingString 抛 TypeError('Invalid setting type')，
      日志里一行 "EXCEPTION: Invalid setting type"，设置界面空白，下载目录也改不了。
      旧版里整数叫 number、文本叫 text、目录叫 folder —— 别用新版那套
-     boolean / integer / string（那是 <settings version="1"> 才搭配的写法）。 -->
+     boolean / integer / string（那是 <settings version="1"> 才搭配的写法）。
+
+     旧版没有「子分类」这层，只能用 lsep 当分组标题，把设置切成几段。 -->
 <settings>
   <category label="常规">
-    <setting id="show_thumb" type="bool" label="显示缩略图" default="true"/>
-    <setting id="h5e_play" type="bool"
-             label="高画质播放" default="true"/>
+    <setting label="下载配置" type="lsep"/>
     <setting id="download_path" type="folder" label="下载目录"
              default="special://profile/addon_data/plugin.video.cctv/downloads/"
              option="writeable"/>
+
+    <setting label="频道管理" type="lsep"/>
+    <setting id="ch_netdrama" type="bool" label="央视网剧" default="true"/>
+    <setting id="ch_tingyin" type="bool" label="听音" default="true"/>
+    <setting id="ch_sports" type="bool" label="体育" default="true"/>
+    <setting id="ch_fourk" type="bool" label="4K专区" default="true"/>
+    <setting id="ch_panda" type="bool" label="熊猫" default="true"/>
+    <setting id="ch_chunwan" type="bool" label="总台春晚" default="true"/>
+    <setting id="ch_docu" type="bool" label="精品纪录" default="true"/>
+    <setting id="ch_wsp" type="bool" label="微视频" default="true"/>
+    <setting id="ch_wgs" type="bool" label="微故事" default="true"/>
+    <setting id="ch_food" type="bool" label="美食" default="true"/>
   </category>
+
   <category label="账户">
-    <setting id="logout" type="action" label="退出登录"
-             action="RunPlugin(plugin://plugin.video.cctv/?mode=logout)"/>
+    <setting label="用户" type="lsep"/>
+    <setting label="退出登录" type="action"
+             action="RunPlugin(plugin://$ID/?mode=logout)"/>
+    <setting label="删除同步记录" type="action"
+             action="RunPlugin(plugin://$ID/?mode=clearsync)"/>
+
+    <setting label="维护" type="lsep"/>
+    <setting label="清除离线记录" type="action"
+             action="RunPlugin(plugin://$ID/?mode=clearoffline)"/>
   </category>
 </settings>

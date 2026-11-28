@@ -51,6 +51,12 @@ ALBUM_API_SORTED = (
     "https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew"
     "?id=%s&n=20&p=%d&sort=%s&serviceId=tvcctv&t=jsonp&cb=cb"
 )
+# 这是页面上「更多 >」弹层的数据源，比上面的通用接口字段更全（带时长）。
+ALBUM_API_FULL = (
+    "https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew"
+    "?id=%s&serviceId=tvcctv&pub=1&sort=%s&mode=0&p=%d&n=100&t=jsonp&cb=cb"
+)
+ALBUM_FULL_PAGE = 100
 ALBUM_PAGE_SIZE = 20
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -71,7 +77,7 @@ _NOISE_RE = re.compile(
 # 正文里的视频占位标记：[!--begin:htmlVideoCode--]<guid>,0,1,16:9,…[!--end:htmlVideoCode--]
 _VIDEO_CODE_RE = re.compile(r"\[!--begin:htmlVideoCode--\].*?(?:\[!--end:htmlVideoCode--\]|$)", re.S)
 # 新闻频道的正文不是直接写在 HTML 里，而是塞在一段脚本的字符串里：
-#   var contentdate  = '<p …>…</p>…';
+# var contentdate  = '<p …>…</p>…';
 # 旧版是靠「没删 <script>、<p> 正则顺手捞到」才读出来的，等于碰运气。
 _JS_BODY_RE = re.compile(r"var\s+(contentdate|content|article_content)\s*=\s*", re.I)
 _JS_VIDEO_RE = re.compile(r"\[!--begin:htmlVideoCode--\]\s*([0-9a-fA-F]{32})")
@@ -439,20 +445,37 @@ def column_items(column_url, name="", limit=60):
 
 
 # ---------------------------------------------------------------- 剧集(专辑)
-def album_items(album_id, page=1, sort="desc"):
+def album_items(album_id, page=1, sort="desc", full=False):
     """某部剧集的分集列表。返回 (items, total)。
 
     sort="asc" 时从第 1 集往后排 —— 片库的剧集只有升序才把正片排在前面，
     倒序第一页全是「看点」（每集的剧情摘要），这是 2.0.2 的一个 bug。
+
+    full=True 优先走视频页「选集」的官方参数（pub=1&mode=0&n=100），
+    这是页面上「选集 / 更多 >」真正的数据源；但它只对有 pub 数据的专辑有效
+    （听音类专辑用这套参数会返回 0），所以取不到时自动回退普通接口。
     """
+    if full:
+        try:
+            url = ALBUM_API_FULL % (album_id, sort, page)
+            _, text = net.get_text(url, timeout=20, referer="https://tv.cctv.com/")
+            data = _jsonp(text)["data"]
+            rows = data.get("list") or []
+            if rows:
+                return _album_rows(rows, data.get("total")), int(data.get("total") or 0)
+        except Exception:
+            pass
     _, text = net.get_text(
         ALBUM_API_SORTED % (album_id, page, sort),
         timeout=15, referer="https://tv.cctv.com/",
     )
     data = _jsonp(text)["data"]
-    total = int(data.get("total") or 0)
+    return _album_rows(data.get("list") or [], data.get("total")), int(data.get("total") or 0)
+
+
+def _album_rows(rows, total):
     items = []
-    for row in data.get("list") or []:
+    for row in rows:
         title = _clean(row.get("title"))
         if not title:
             continue
@@ -468,7 +491,7 @@ def album_items(album_id, page=1, sort="desc"):
                 "duration": str(row.get("length") or ""),
             }
         )
-    return items, total
+    return items
 
 
 def album_id_of(page_url):
@@ -615,8 +638,8 @@ def home_sections(url=HOME_URL):
 
 # ---------------------------------------------------------------- 体育
 # sports.cctv.com 和 news.cctv.com 共用一套 CMS 接口，栏目名是拼音：
-#   nba / cba / zhongchao(中超) / yingchao(英超) / dejia(德甲) / yijia(意甲)
-#   wangqiu(网球) / paiqiu(排球) / zhongguozuqiu(中国足球) / guojizuqiu(国际足球)
+# nba / cba / zhongchao(中超) / yingchao(英超) / dejia(德甲) / yijia(意甲)
+# wangqiu(网球) / paiqiu(排球) / zhongguozuqiu(中国足球) / guojizuqiu(国际足球)
 # 顶部导航（「推荐」除外）里的另外 9 个频道没有对应栏目：它们的落地页只剩
 # 全站推荐位那几条视频（每个页面都一模一样），电竞赛、亚运会、奥林匹克更是
 # 纯 JS 页，一条链接都没有。这些改用搜索接口按关键词取内容。
@@ -746,13 +769,13 @@ def sports_channel_items(name, page=1):
 
 # ---------------------------------------------------------------- 赛事（cbs.sports.cctv.com）
 # 央视体育「赛程/竞猜」站的 PC 页是 React 单页，数据全在这几个接口：
-#   /league/hot_list      热门联赛（9 个，带图标与项目类型）
-#   /game/date_list       日期轴：today + 21 天（滚动窗口，没有历史赛季）
-#   /game/date_game_list  startTime/endTime[&leagueId] → 按天分组的赛程
-#   /game/game_detail     id=<场次id> → 单场详情，videoList 才是视频列表
+# /league/hot_list      热门联赛（9 个，带图标与项目类型）
+# /game/date_list       日期轴：today + 21 天（滚动窗口，没有历史赛季）
+# /game/date_game_list  startTime/endTime[&leagueId] → 按天分组的赛程
+# /game/game_detail     id=<场次id> → 单场详情，videoList 才是视频列表
 # 注意两点（都是实测出来的）：
-#   * 赛程接口里的 videoList 永远是空的，只有 hasVideo 标志位，视频要逐场拉详情；
-#   * 接口要求带 ran=<毫秒时间戳>，否则可能拿到缓存的旧数据。
+# * 赛程接口里的 videoList 永远是空的，只有 hasVideo 标志位，视频要逐场拉详情；
+# * 接口要求带 ran=<毫秒时间戳>，否则可能拿到缓存的旧数据。
 CBS_API = "https://cbs-u.sports.cctv.com/pc"
 CBS_REFERER = "https://cbs.sports.cctv.com/index.html"
 CBS_WINDOW = 21            # 日期轴就是 21 天
@@ -888,10 +911,9 @@ def game_videos(game):
 
 
 # ---------------------------------------------------------------- 赛事：全场 vs 集锦
-# 2.1.4：一场比赛里除了集锦，还有「赛事」（全场录像/回放）。央视的命名很规整：
-#     赛事：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源      （约 100 分钟）
-#     集锦：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源 集锦 （约 2~5 分钟）
-#          [NBA]常规赛10月27日：老鹰VS火箭 比赛回顾        （约 2 分钟，也算集锦）
+# 赛事：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源      （约 100 分钟）
+# 集锦：[CBA]常规赛11月3日：山西汾酒VS新疆广汇能源 集锦 （约 2~5 分钟）
+# [NBA]常规赛10月27日：老鹰VS火箭 比赛回顾        （约 2 分钟，也算集锦）
 # 所以「标题带 VS、且没有 集锦/回顾」就是全场。
 _FULL_MATCH_RE = re.compile(r"(?:VS|vs|Vs)")
 
@@ -1525,10 +1547,8 @@ def sports_highlights(days=CBS_HIGHLIGHT_DAYS, progress=None):
 
 
 # ---------------------------------------------------------------- 搜索
-# 2.1.4：视频搜索照搬网页端的两段结构 ——
-#   ① 顶部「推荐 / 其他相关视频集结果」：一叠剧集入口（熊出没之雪岭熊风…）
-#   ② 「全部视频结果」：逐条视频，原样铺开
-# 以前只取了移动版的视频列表，还把同一个 ALBUMID 的 20 条压成一条
+# ① 顶部「推荐 / 其他相关视频集结果」：一叠剧集入口（熊出没之雪岭熊风…）
+# ② 「全部视频结果」：逐条视频，原样铺开
 # 「XX（剧集）」，所以搜「熊出没」几乎什么都看不到。
 def search_grouped(keyword, page=1, page_size=20):
     """视频搜索，返回 (items, total)。第 1 页先放视频集，再放视频。"""
@@ -1580,7 +1600,7 @@ def search_audio(keyword, page=1, page_size=20):
     return items, total
 
 def search_articles(keyword, page=1, page_size=20):
-    """文章搜索（2.2.0 beta1：从「选项」里的「搜索文章」进）。
+    """文章搜索（从「选项」里的「搜索文章」进）。
 
     走网页搜索的「文章」页签（手机接口 type=article），返回 ARTI/PHOA 链接；
     点开复用现成的「报道」阅读链路。
@@ -1591,7 +1611,7 @@ def search_articles(keyword, page=1, page_size=20):
     items = []
     for it in rows:
         if it.get("playable", True):
-            continue        # 这条其实是视频，留给「搜索视频」
+            continue        # 这条是视频，留给「搜索视频」
         items.append(
             {
                 "kind": "article",

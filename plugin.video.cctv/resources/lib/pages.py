@@ -210,14 +210,12 @@ CHANNELS = (
      "plot": "产业+：产业观察、企业故事"},
 )
 
-# 新闻频道子导航里插件原来缺的那几个
 # 「图片」没有收：photo.cctv.com 是 JS 图集，正文只有 49 字、图片列表也拿不到，
 # 塞进菜单就是点了打不开，属于假入口。
 NEWS_EXTRA = (
     {"name": "经济", "kind": "cms", "col": "economy"},
     {"name": "生活", "kind": "cms", "col": "life"},
     {"name": "军事", "kind": "pageid", "pid": "PAGEuW4ufGzN1PqixVNeQmoE210923"},
-    # 快看是一个多小节拼起来的页面：只取其中一个 pageId 会拿到很久以前的精选，
     # 合并主列表 + 8 个分节后才是「最新」那一版（实测最新到 2026-10）。
     {"name": "快看", "kind": "pageid",
      "pid": "PAGE17fgF14A05UY45jAKwyS190524,PAGEwscuo8BgMtTD0zJpO6QO190701,"
@@ -557,7 +555,6 @@ TY_SECTIONS = (
     {"name": "电视剧", "pid": "PAGEucQhBjWzSNBxC93UoCAt201126"},
 )
 
-# 2.3.0 beta5：听音「类别」——来自 tv.cctv.com/ty/m/dianshiju/index.shtml 顶部的分类条，
 # 去掉「首页」「热听榜」。每类对应一个 PAGE id（「全部」是 CHAL 频道号，走另一个参数）。
 TY_CATEGORIES = (
     ("全部", "chal", "CHAL1598506236114187"),
@@ -790,8 +787,6 @@ def ty_items(pid, page=1):
 
 
 # ---------------------------------------------------------------- 听音首页
-# 2.2.0：听音首页（tv.cctv.com/ty/m/index.shtml）的横幅下面有「历史 / 听精品 /
-# 听剧 / 名家讲堂 / 评书 / 相声·小品 …」好几段，每段十来条。以前只用接口取了
 # 历史、电视剧两个专辑列表，这些内容全丢了。这里把整页解析成
 # [(段名, [{"title", "url", "thumb"}])]，由界面层平铺到听音根目录。
 TY_HOME_URL = "https://tv.cctv.com/ty/m/index.shtml"

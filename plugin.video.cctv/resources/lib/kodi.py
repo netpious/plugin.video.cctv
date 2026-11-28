@@ -116,25 +116,24 @@ def progress_close(progress):
 
 
 def _raw_setting(addon, key):
-    """getSettingString 对所有类型都安全，不会像 getSettingInt/getSettingBool 那样
-    在设置定义解析失败时抛 TypeError('Invalid setting type')。"""
     try:
         return (addon.getSettingString(key) or "").strip()
     except Exception:
         return ""
 
 
-def setting_int(addon, key, default):
-    raw = _raw_setting(addon, key)
-    if not raw:
-        return default
-    try:
-        return int(float(raw))
-    except ValueError:
-        return default
-
-
 def setting_bool(addon, key, default=False):
+    """读开关。
+
+    Kodi 的绑定是按设置类型分派的：bool 设置只能 getSettingBool，
+    拿 getSettingString 去读会抛 TypeError('Invalid setting type')，
+    日志里就是一行 EXCEPTION: Invalid setting type。反过来也一样。
+    所以先按类型读，类型对不上再退回字符串解析。
+    """
+    try:
+        return bool(addon.getSettingBool(key))
+    except Exception:
+        pass
     raw = _raw_setting(addon, key).lower()
     if raw in ("true", "1", "yes", "on"):
         return True
@@ -144,6 +143,7 @@ def setting_bool(addon, key, default=False):
 
 
 def setting_str(addon, key, default=""):
+    """读文本/目录设置。文本类型不能用 getSettingBool，那会抛 Invalid setting type。"""
     raw = _raw_setting(addon, key)
     return raw or default
 
@@ -454,6 +454,37 @@ def cancel_playback(handle):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem(offscreen=True))
     except Exception as exc:
         log("setResolvedUrl(False) failed: %r" % exc, xbmc.LOGWARNING)
+
+
+def play_with_playlist(handle, stream_url, title="", thumb="", entries=None, start_index=0):
+    """正常解析当前集（setResolvedUrl），同时把整部选集挂到 Kodi 播放列表。
+
+    2.3.2：以前用 xbmc.Player().play() 自己起播，再 setResolvedUrl(False) 取消
+    目录项的播放请求 —— 两者会打架，Kodi 弹「一个或多个项目播放失败」。
+    现在改成只「追加」播放列表，当前集仍由 Kodi 按正常流程播放。
+    """
+    item = xbmcgui.ListItem(path=stream_url, offscreen=True)
+    if title:
+        item.setInfo("video", {"title": title})
+    if thumb:
+        item.setArt({"thumb": thumb})
+    item.setProperty("IsPlayable", "true")
+
+    # 把当前集之后的分集追加进 Kodi 播放列表，播放器里就能看到「播放列表」。
+    try:
+        if entries and len(entries) > 1:
+            playlist = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
+            playlist.clear()
+            for label, url, pthumb in entries:
+                it = xbmcgui.ListItem(label=label, offscreen=True)
+                it.setInfo("video", {"title": label})
+                if pthumb:
+                    it.setArt({"thumb": pthumb})
+                playlist.add(url, it)
+    except Exception as exc:
+        log("playlist fill failed: %r" % exc, xbmc.LOGWARNING)
+
+    xbmcplugin.setResolvedUrl(handle, True, item)
 
 
 def play(handle, stream_url, title="", thumb="", is_live=False):

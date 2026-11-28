@@ -28,10 +28,10 @@ SEARCH_API = (
 )
 
 # 直播线路，两套：
-#   LIVE_HOSTS_HD  —— ldncctvwbcd / cdrmld{ch}_1，时移流，master 里给 1080P/720P/360P，
-#                     实测能一路拉到 .ts 分片，优先用这套。
-#   LIVE_HOSTS     —— ldncctvwbnd / ld{ch}_2，传统直播流，多数只回一个空壳 master
-#                     （里面写的二级地址 404），留作兜底。
+# LIVE_HOSTS_HD  —— ldncctvwbcd / cdrmld{ch}_1，时移流，master 里给 1080P/720P/360P，
+# 实测能一路拉到 .ts 分片，优先用这套。
+# LIVE_HOSTS     —— ldncctvwbnd / ld{ch}_2，传统直播流，多数只回一个空壳 master
+# （里面写的二级地址 404），留作兜底。
 LIVE_HOSTS_HD = (
     "http://ldncctvwbcdcnc.v.wscdns.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
     "http://ldncctvwbcdks.v.kcdnvip.com/ldncctvwbcd/cdrmld%s_1/index.m3u8",
@@ -239,10 +239,10 @@ def fill_thumbs(items, workers=8, deadline=6.0):
 
 # ---------------------------------------------------------------- 点播
 # 点播接口会给好几条 HLS 地址，画质差别很大：
-#   hls_url      明文 /asp/hls/ 梯，能正常解码；但 master 受 maxbr 限制，常常只报 480p
-#   hls_enc_url  /asp/enc/hls/ 梯：档位齐全（甚至 1080p），但画面是加密的，
-#                解码满屏 concealing/corrupt，就是「1080P 乱码」
-#   hls_h5e_url / hls_enc2_url  多数情况 403
+# hls_url      明文 /asp/hls/ 梯，能正常解码；但 master 受 maxbr 限制，常常只报 480p
+# hls_enc_url  /asp/enc/hls/ 梯：档位齐全（甚至 1080p），但画面是加密的，
+# 解码满屏 concealing/corrupt，就是「1080P 乱码」
+# hls_h5e_url / hls_enc2_url  多数情况 403
 # 结论：只走明文 /asp/hls/，并且自己按档位号把 450/850/1200/2000/4000 都试一遍，
 # 用 SPS 解出真实分辨率，确认能解码才交出去。见 download.clear_ladders()。
 HLS_KEYS = ("hls_url", "hls_enc_url", "hls_h5e_url", "hls_enc2_url")
@@ -445,8 +445,6 @@ def live_url(channel, budget=8.0):
 
 
 # ---------------------------------------------------------------- 搜索
-# 2.1.4：视频搜索改用网页端（search.cctv.com）自己的接口 ifsearch.php。
-# 以前用的是移动版 m/if3g_search.php —— 同一个关键词，两边结果不一样：
 # 搜「熊出没」网页端第一条是「电影《熊出没 年年有熊》」，移动版却把最近几天的
 # 《动画大放映》排在最前（而且这 20 条全是同一个 ALBUMID，被下面的归并逻辑
 # 压成一条「动画大放映（剧集）」），于是插件里几乎什么都看不到。

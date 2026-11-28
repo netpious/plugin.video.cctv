@@ -17,6 +17,7 @@ Kodi 没有「把某个网址存成文件」的接口（xbmcvfs 只能操作本�
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 
 from . import net
@@ -27,6 +28,55 @@ DEFAULT_DIR = "special://profile/addon_data/plugin.video.cctv/downloads/"
 REFERER = "https://tv.cctv.com/"
 SEGMENT_TIMEOUT = 30
 RETRIES = 3
+
+# 分片并发下载的线程数。实测 16 最快，再往上 CDN 会开始拒连。
+SEG_WORKERS = 16
+# 单片最多试几次。CDN 偶尔会掐掉个别连接，重试一次基本都能过。
+SEG_TRIES = 4
+
+
+def _fetch_try(fetch, index, tries=SEG_TRIES):
+    """拉一片，失败就退避重试；都失败返回 None。"""
+    for attempt in range(tries):
+        try:
+            data = fetch(index)
+        except Exception:
+            data = None
+        if data:
+            return data
+        if attempt + 1 < tries:
+            time.sleep(0.3 * (attempt + 1))
+    return None
+
+
+def _parallel_ordered(total, fetch, write, workers=SEG_WORKERS,
+                      callback=None, estimate=0):
+    """并发拉分片、按原始顺序写盘。
+
+    fetch(i) -> bytes 或 None（失败）
+    write(i, data) 按 0..total-1 的顺序调用，保证输出文件顺序正确。
+
+    只保留约 2 个窗口的在途分片，避免长剧集把内存吃满。
+    """
+    window = max(workers * 2, 4)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {}
+        nxt_fetch = 0
+        nxt_write = 0
+        done = 0
+        while nxt_write < total:
+            while nxt_fetch < total and nxt_fetch - nxt_write < window:
+                pending[nxt_fetch] = pool.submit(_fetch_try, fetch, nxt_fetch)
+                nxt_fetch += 1
+            data = pending.pop(nxt_write).result()
+            if data is None:
+                raise ValueError("分片 %d/%d 重试 %d 次仍失败" % (
+                    nxt_write + 1, total, SEG_TRIES))
+            write(nxt_write, data)
+            done += len(data)
+            nxt_write += 1
+            if callback and not callback(done, estimate, nxt_write, total):
+                raise Cancelled()
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 _RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
@@ -305,7 +355,7 @@ def list_streams(guid="", page_url="", referer=None):
 
 
 def download_h5e(media_url, dest, callback=None, referer=REFERER, estimate_bytes=0):
-    """下载 H5E 档：逐片拉下来、解密成明文 TS，再顺序写进同一个文件。
+    """下载 H5E 档：并发拉片、解密成明文 TS，按序写进同一个文件。
 
     callback(done_bytes, estimate_bytes, index, total) 返回 False 表示取消。
     """
@@ -317,30 +367,41 @@ def download_h5e(media_url, dest, callback=None, referer=REFERER, estimate_bytes
         raise ValueError("H5E 清单里没有分片")
 
     total = len(segs)
-    written = 0
-    vpid = None
     partial = dest + ".part"
     ensure_dir(os.path.dirname(dest))
+
+    # 先拿第一片，既用来取 vpid（解密必需），也算预热
+    first_raw = h5eplay._get(segs[0], timeout=SEGMENT_TIMEOUT)
+    vpid = h5e.video_pid(first_raw)
+
+    def decrypt(raw):
+        if raw is None:
+            return None
+        if not vpid:
+            return raw
+        data, stats = h5e.decrypt_ts(raw, vpid)
+        # 解不出来就按原样写，别让整次下载报废
+        return data if stats.get("ok") else raw
+
+    def fetch(i):
+        if i == 0:
+            return decrypt(first_raw)
+        try:
+            return decrypt(h5eplay._get(segs[i], timeout=SEGMENT_TIMEOUT))
+        except Exception:
+            return None
+
     try:
         with open(partial, "wb") as handle:
-            for index, url in enumerate(segs, 1):
-                raw = h5eplay._get(url, timeout=SEGMENT_TIMEOUT)
-                if vpid is None:
-                    vpid = h5e.video_pid(raw)
-                data, stats = h5e.decrypt_ts(raw, vpid)
-                if not stats.get("ok"):
-                    # 这一片不是加密的（或解不出来），按原样写，别把整次下载毁掉
-                    data = raw
-                handle.write(data)
-                written += len(data)
-                if callback and not callback(written, estimate_bytes, index, total):
-                    raise Cancelled()
+            _parallel_ordered(total, fetch, lambda i, d: handle.write(d),
+                              callback=callback, estimate=estimate_bytes)
     except Exception:
         _silent_remove(partial)
         raise
 
+    size = os.path.getsize(partial)
     os.replace(partial, dest)
-    return {"path": dest, "bytes": written, "segments": total, "duration": 0}
+    return {"path": dest, "bytes": size, "segments": total, "duration": 0}
 
 
 # ---------------------------------------------------------------- 下载
@@ -434,21 +495,25 @@ def download_hls(media_url, dest, callback=None, max_segments=None, referer=REFE
         except ValueError:
             pass
 
-    written = 0
     partial = dest + ".part"
     ensure_dir(os.path.dirname(dest))
+
+    def fetch(i):
+        kind, url, byterange = items[i]
+        try:
+            return _fetch_bytes(url, byterange, referer=referer)
+        except Exception:
+            return None
+
     try:
         with open(partial, "wb") as handle:
-            for index, (kind, url, byterange) in enumerate(items[:total], 1):
-                data = _fetch_bytes(url, byterange, referer=referer)
-                handle.write(data)
-                written += len(data)
-                if callback and not callback(written, estimate_bytes, index, total):
-                    raise Cancelled()
+            _parallel_ordered(total, fetch, lambda i, d: handle.write(d),
+                              callback=callback, estimate=estimate_bytes)
     except Exception:
         _silent_remove(partial)
         raise
 
+    written = os.path.getsize(partial)
     os.replace(partial, dest)
     return {
         "path": dest,
@@ -478,9 +543,9 @@ def download_article(title, body, source, dest):
 
 # ---------------------------------------------------------------- 明文高清梯（真正能播的）
 # 央视点播有两套 HLS 线路，名字只差一段：
-#   /asp/hls/{档位}/…      明文，能正常解码 —— 用它
-#   /asp/enc/hls/{档位}/…  同一套转码梯的加密版：TS 结构完好、SPS 能读，
-#                          但画面数据是加密的，解码满屏 concealing/corrupt —— 垃圾
+# /asp/hls/{档位}/…      明文，能正常解码 —— 用它
+# /asp/enc/hls/{档位}/…  同一套转码梯的加密版：TS 结构完好、SPS 能读，
+# 但画面数据是加密的，解码满屏 concealing/corrupt —— 垃圾
 # 另外 master 里的 maxbr 会把高档位裁掉（maxbr=2048 时连 720p 都不报），
 # 所以要自己按档位号拼地址，并把分片开头的 SPS 真正解出来，确认分辨率。
 CLEAR_TIERS = (8000, 6000, 4000, 2000, 1200, 850, 450)

@@ -311,6 +311,43 @@ def _normalize_collect(row):
     }
 
 
+def _delete_history(record_id):
+    """清空观看历史。返回是否成功。
+
+    2026-11-28 实测：DELETE /openapi/v2/video/records?id=<任意一条记录的 id>
+    会把整份历史一次清空（传别的 id 也一样），所以只调一次就够。
+    """
+    url = "https://i.cctv.com/openapi/v2/video/records"
+    data = {"timestamp": _ts(), "appid": APPID, "id": record_id}
+    try:
+        raw = net.request_json(url, method="DELETE", data=data, timeout=20,
+                               referer=REFERER, headers=_collect_headers())
+        return str(json.loads(raw.decode("utf-8", "replace")).get("code")) == "0"
+    except Exception:
+        return False
+
+
+def clear_history():
+    """清空账号里的观看历史。返回 (成功?, 提示, 删掉几条)。"""
+    if not is_logged_in():
+        return False, "请先登录", 0
+    rows = history()[0]
+    before = len(rows)
+    if not before:
+        return True, "没有同步记录", 0
+
+    rid = str((rows[0].get("raw") or {}).get("id") or "")
+    if not rid:
+        return False, "没读到记录编号", 0
+    if not _delete_history(rid):
+        return False, "删除请求失败", 0
+
+    left = len(history()[0])
+    if left:
+        return False, "还有 %d 条没删掉" % left, before - left
+    return True, "已删除 %d 条同步记录" % before, before
+
+
 def history():
     """观看历史。返回 (列表, 是否来自缓存)。"""
     if not is_logged_in():
@@ -374,6 +411,16 @@ def add_offline(guid, title="", thumb="", page_url="", position=0):
         "played_at": int(time.time()),
     })
     return _write_json(HISTORY_OFFLINE, {"rows": rows[:MAX_OFFLINE]})
+
+
+def clear_offline():
+    """清掉本地离线记录。返回删掉几条。"""
+    count = len(offline_history())
+    try:
+        os.remove(_path(HISTORY_OFFLINE))
+    except OSError:
+        pass
+    return count
 
 
 def report_cloud(guid, page_url="", position=0):
@@ -447,9 +494,18 @@ def collect_status(source_id, source_type=1):
 
 
 def collect_add(source_id, source_type=1, title="", url="", thumb=""):
-    """收藏到央视网账号。返回 (成功?, 提示)。"""
+    """收藏到央视网账号。返回 (成功?, 提示)。
+
+    2.3.2：按央视网视频页的真实调用方式重写（以前用 POST，接口其实要 PUT）：
+        PUT //i.cctv.com/openapi/v2/collect/record
+            timestamp / appid / source_id / source_type / source_title
+            / source_logo / source_url，headers 带 verifycode
+    返回 code=="0" 成功；code=="-31001"（已收藏）也算成功。
+    """
     if not is_logged_in():
         return False, "请先登录"
+    if not (load().get("cookies") or {}).get("verifycode"):
+        return False, "登录信息不完整（缺少 verifycode），请重新登录"
     data = {
         "appid": COLLECT_APPID,
         "timestamp": _ts(),
@@ -460,34 +516,59 @@ def collect_add(source_id, source_type=1, title="", url="", thumb=""):
         "source_logo": thumb or "",
     }
     try:
-        _, raw, _headers = net.post_form(
-            "%s?timestamp=%s" % (COLLECT_RECORD, _ts()), data, timeout=20,
+        raw = net.request_json(
+            COLLECT_RECORD, method="PUT", data=data, timeout=20,
             referer=REFERER, headers=_collect_headers())
         resp = json.loads(raw.decode("utf-8", "replace"))
     except Exception as exc:
         return False, "收藏请求失败：%s" % exc
-    if str(resp.get("code")) == "0":
+    code = str(resp.get("code"))
+    if code == "0":
         return True, "已收藏"
-    return False, resp.get("message") or ("收藏失败（%s）" % resp.get("code"))
+    if code == "-31001":          # 已经收藏过
+        return True, "已收藏"
+    return False, resp.get("message") or ("收藏失败（%s）" % code)
 
 
-def collect_remove(source_id, source_type=1):
-    """从央视网账号取消收藏。返回 (成功?, 提示)。"""
+def collect_remove(source_id, source_type=1, collect_id=""):
+    """从央视网账号取消收藏。返回 (成功?, 提示)。
+
+    2.3.2：真实调用是 DELETE collect/record，参数用 **id**（收藏记录的 id），
+    不是 source_id。id 从 collect_status 拿；拿不到时退回 GET del/record。
+    """
     if not is_logged_in():
         return False, "请先登录"
-    data = {
-        "appid": COLLECT_APPID,
-        "timestamp": _ts(),
-        "source_id": source_id,
-        "source_type": str(source_type),
-    }
+    cid = collect_id
+    if not cid:
+        try:
+            st = collect_status(source_id, source_type) or {}
+            cid = str(st.get("id") or "")
+        except Exception:
+            cid = ""
+    if not cid:
+        return False, "找不到这条收藏记录，请刷新书签后再试"
+
+    # 主路径：DELETE collect/record，参数 id
     try:
-        _, raw, _headers = net.delete_form(
-            "%s?timestamp=%s" % (COLLECT_DEL, _ts()), data, timeout=20,
-            referer=REFERER, headers=_collect_headers())
+        raw = net.request_json(
+            COLLECT_RECORD, method="DELETE",
+            data={"timestamp": _ts(), "appid": COLLECT_APPID, "id": cid},
+            timeout=20, referer=REFERER, headers=_collect_headers())
         resp = json.loads(raw.decode("utf-8", "replace"))
+        if str(resp.get("code")) == "0":
+            return True, "已取消收藏"
+        first = resp.get("message") or ("取消收藏失败（%s）" % resp.get("code"))
     except Exception as exc:
-        return False, "取消收藏失败：%s" % exc
-    if str(resp.get("code")) == "0":
-        return True, "已取消收藏"
-    return False, resp.get("message") or ("取消收藏失败（%s）" % resp.get("code"))
+        first = "取消收藏失败：%s" % exc
+
+    # 备用路径：GET collect/del/record（页面里 collectionNoFun 用的就是它）
+    try:
+        q = "?timestamp=%s&appid=%s&id=%s" % (_ts(), COLLECT_APPID, cid)
+        st, _ct, raw = net.fetch(COLLECT_DEL + q, timeout=20, referer=REFERER,
+                                 headers=_collect_headers())
+        resp = json.loads(raw.decode("utf-8", "replace"))
+        if str(resp.get("code")) == "0":
+            return True, "已取消收藏"
+    except Exception:
+        pass
+    return False, first
